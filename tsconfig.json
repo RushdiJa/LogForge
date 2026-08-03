@@ -19,7 +19,10 @@
     "verbatimModuleSyntax": true,
     "noEmit": false,
     "strict": true,
-    "skipLibCheck": true
+    "skipLibCheck": true,
+    "strictFunctionTypes": true,
+    "strictNullChecks": true,
+    "alwaysStrict": true
 
   },
   "include": ["src"],
