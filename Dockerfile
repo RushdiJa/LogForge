@@ -24,7 +24,7 @@ COPY package.json package-lock.json ./
 RUN npm ci --omit=dev
 
 COPY --from=build /app/dist ./dist
-COPY --from=build /app/migrations ./migrations
+COPY migrations ./migrations
 
 EXPOSE 8080
 
