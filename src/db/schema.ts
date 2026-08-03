@@ -9,7 +9,7 @@ import {
 } from "drizzle-orm/pg-core";
 
 type LogAttributeValue = string | number | boolean;
-const logLevelEnum = pgEnum("log_level", [
+export const logLevelEnum = pgEnum("log_level", [
   "debug",
   "info",
   "warn",

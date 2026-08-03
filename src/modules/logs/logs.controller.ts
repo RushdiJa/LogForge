@@ -12,7 +12,7 @@ export async function createLogs(
         return;
     }
     try {
-        await insertLogs(req.body);
+        await insertLogs(req.body?.logs);
         res.status(201).json({ status: "created", message: "Logs inserted successfully" });
     } catch (error : any) { 
         // we will use route error handler to handle the error and send the response
