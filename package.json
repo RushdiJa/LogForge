@@ -1,6 +1,6 @@
 {
   "name": "logforge",
-  "version": "0.3.2",
+  "version": "0.3.3",
   "description": "High-throughput structured log ingestion, querying, and aggregation service",
   "type": "module",
   "main": "dist/server.js",
@@ -37,6 +37,7 @@
     "dotenv": "^17.4.2",
     "drizzle-orm": "^0.45.2",
     "express": "^5.2.1",
-    "postgres": "^3.4.9"
+    "postgres": "^3.4.9",
+    "zod": "^4.4.3"
   }
 }
