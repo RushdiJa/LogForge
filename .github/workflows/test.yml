@@ -1,0 +1,58 @@
+name: LogForge CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  integration-tests:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build TypeScript project
+        run: npm run build
+
+      - name: Start application and database
+        run: docker compose up -d --build
+
+      - name: Wait for application health
+        run: |
+          for attempt in {1..30}; do
+            if curl --fail --silent http://localhost:8080/health > /dev/null; then
+              echo "Application is healthy"
+              exit 0
+            fi
+
+            echo "Waiting for application... attempt $attempt/30"
+            sleep 2
+          done
+
+          echo "Application did not become healthy"
+          docker compose logs
+          exit 1
+
+      - name: Run Vitest tests
+        run: npm test
+
+      - name: Show Docker logs on failure
+        if: failure()
+        run: docker compose logs
+
+      - name: Stop services
+        if: always()
+        run: docker compose down -v
