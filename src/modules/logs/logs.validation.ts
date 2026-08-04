@@ -1,16 +1,17 @@
 import {
   logSchema,
+  LogsError,
   type RejectedLog,
   type Log,
-  type ValidateLogsResult,
-} from "./logs.type.js";
+  type ValidateLogsResult} from "./logs.type.js";
 
-export function validLogs(logs: unknown): ValidateLogsResult {
+export async function validLogs(logs: unknown): Promise<ValidateLogsResult> {
     if (!Array.isArray(logs)) {
-        return {
-        success: false,
-        error: "Invalid input: logs must be an array",
-        };
+        throw new LogsError(
+            "INVALID_REQUEST_BODY", 
+            400, 
+            "logs must be an array"
+        );
     }
 
     const valid: Log[] = [];
@@ -34,15 +35,7 @@ export function validLogs(logs: unknown): ValidateLogsResult {
         }
     });
 
-    if (valid.length === 0) {
-        return {
-            success: false,
-            error: "No valid logs found",
-        };
-    }
-
     return {
-        success: true,
         valid,
         rejected,
     };

@@ -1,14 +1,10 @@
-import {validLogs} from "./logs.validation.ts";
-import {insertLog} from "./logs.repository.ts";
-import {type ValidateLogsResult} from "./logs.type.ts";
+import {validLogs} from "./logs.validation.js";
+import {insertLog} from "./logs.repository.js";
+import {type ValidateLogsResult} from "./logs.type.js";
 export async function insertLogs(logs: unknown) : Promise<ValidateLogsResult> {
-    const result = validLogs(logs);
-    
-    if (!result.success) {
-        throw new Error(result.error);
-    }
-    result.valid.forEach(async (log) => {
-        await insertLog(log);
-    });
+    const result : ValidateLogsResult = await validLogs(logs);
+    await Promise.all(
+        result.valid.map((log) => insertLog(log)),
+    );
     return result;
 }
