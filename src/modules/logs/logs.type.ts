@@ -1,23 +1,54 @@
-export type Attributes = Record<string, string | number | boolean>;
-export type Log = {
-    timestamp: Date;
-    level: "debug" | "info" | "warn" | "error";
-    service: string;
-    message: string;
-    attributes?: Attributes;
-};
-type RejectedLog = {
+import { z } from "zod";
+
+// regex format
+const ISO_8601_TIMESTAMP = 
+  /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,3})?(?:Z|[+-]\d{2}:\d{2})$/;
+
+const timestampSchema = z
+  .string()
+  .regex(ISO_8601_TIMESTAMP, "Timestamp must be valid ISO 8601")
+  .refine(
+    (timestamp) => !Number.isNaN(Date.parse(timestamp)),
+    "Timestamp is not a valid date",
+  )
+  .refine(
+    (timestamp) =>
+      Date.parse(timestamp) <= Date.now() + 5 * 60 * 1000,
+    "Timestamp must not be more than five minutes in the future",
+  )
+  .transform((timestamp) => new Date(timestamp));
+
+export const attributesSchema = z.record(
+  z.string(),
+  z.union([z.string(), z.number(), z.boolean()]),
+);
+
+export const logSchema = z.object({
+  timestamp: timestampSchema,
+  level: z.enum(["debug", "info", "warn", "error"]),
+  service: z.string().min(1, "Service is required"),
+  message: z.string().min(1, "Message is required"),
+  attributes: attributesSchema.default({}),
+});
+
+export type LogInput = z.input<typeof logSchema>;
+
+export type Log = z.output<typeof logSchema>;
+
+export type Attributes = z.infer<typeof attributesSchema>;
+
+export type RejectedLog = {
   index: number;
   reason: string;
 };
+
 export type ValidateLogsResult =
     {
-        success: false;
-        error: string;
+      success: false;
+      error: string;
     }
-    | 
-    {
-        success: true;
-        valid: Log[];
-        rejected: RejectedLog[];
+  | {
+      success: true;
+      valid: Log[];
+      rejected: RejectedLog[];
     };
