@@ -1,5 +1,6 @@
 import type { Request, Response } from "express";
-import {insertLogs} from "./logs.service.ts"
+import {insertLogs} from "./logs.service.ts";
+import {type ValidateLogsResult} from "./logs.type.ts";
 export async function createLogs(
   req: Request,
   res: Response,
@@ -14,8 +15,16 @@ export async function createLogs(
     }
     try {
         console.log("Inserting logs: ", req.body?.logs);
-        await insertLogs(req.body?.logs);
-        res.status(201).json({ status: "created", message: "Logs inserted successfully" });
+        const result : ValidateLogsResult = await insertLogs(req.body?.logs);
+        if(result.success){
+            res.status(201).json({ 
+                "accepted" : result.valid.length,
+                "rejected" : result.rejected 
+            });
+        }
+        else{
+            throw new Error("Impossible Error to occur");
+        }
     } catch (error : any) { 
         // we will use route error handler to handle the error and send the response
         res.status(400).json({ status: "bad_request", message: error.message ?? "An unknown error occurred" });
