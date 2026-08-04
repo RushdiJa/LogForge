@@ -66,3 +66,72 @@ export class LogsError extends Error {
     this.name = "LogsError";
   }
 }
+
+// ====
+const queryTimestampSchema = z
+  .string()
+  .regex(
+    ISO_8601_TIMESTAMP,
+    "Timestamp must be valid ISO 8601",
+  )
+  .refine(
+    (timestamp) => !Number.isNaN(Date.parse(timestamp)),
+    "Timestamp is not a valid date",
+  )
+  .transform((timestamp) => new Date(timestamp));
+
+const limitSchema = z
+  .string()
+  .regex(/^\d+$/, "Limit must be a numeric value")
+  .transform(Number)
+  .refine(
+    (limit) => limit >= 1 && limit <= 1000,
+    "Limit must be between 1 and 1000",
+  )
+  .default(100);
+
+export const logsFiltersSchema = z
+  .object({
+    service: z
+      .string()
+      .min(1, "Service must not be empty")
+      .optional(),
+
+    level: z
+      .enum(["debug", "info", "warn", "error"])
+      .optional(),
+
+    since: queryTimestampSchema.optional(),
+
+    until: queryTimestampSchema.optional(),
+
+    q: z.string().optional(),
+
+    limit: limitSchema,
+
+    cursor: z
+      .string()
+      .min(1, "Cursor must not be empty")
+      .optional(),
+  })
+  .refine(
+    (filters) => {
+      if (!filters.since || !filters.until) {
+        return true;
+      }
+
+      return filters.until.getTime() > filters.since.getTime();
+    },
+    {
+      path: ["until"],
+      message: "Until must be later than since",
+    },
+  );
+
+export type LogsFiltersInput = z.input<
+  typeof logsFiltersSchema
+>;
+
+export type LogsFilters = z.output<
+  typeof logsFiltersSchema
+>;
