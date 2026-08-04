@@ -42,13 +42,27 @@ export type RejectedLog = {
   reason: string;
 };
 
-export type ValidateLogsResult =
-    {
-      success: false;
-      error: string;
-    }
-  | {
-      success: true;
-      valid: Log[];
-      rejected: RejectedLog[];
-    };
+export type ValidateLogsResult = {
+    valid: Log[];
+    rejected: RejectedLog[];
+};
+
+export type LogsErrorCode =
+  | "INVALID_REQUEST_BODY"
+  | "LOGS_DATABASE_ERROR"
+  | "UNSUPPORTED_MEDIA_TYPE"
+  ;
+export class LogsError extends Error {
+  public readonly code: LogsErrorCode;
+  public readonly statusCode: number;
+  constructor(
+    code: LogsErrorCode,
+    statusCode: number,
+    message: string,
+  ) {
+    super(message);
+    this.code = code;
+    this.statusCode = statusCode;
+    this.name = "LogsError";
+  }
+}
