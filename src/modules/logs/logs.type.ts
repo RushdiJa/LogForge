@@ -89,7 +89,7 @@ const cursorPayloadSchema = z
     id: z
       .string()
       .regex(/^\d+$/, "Cursor id must be numeric")
-      .transform(BigInt),
+      .transform(Number),
   })
   .strict();
 

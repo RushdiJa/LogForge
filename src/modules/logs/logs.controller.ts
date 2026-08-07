@@ -1,7 +1,7 @@
 import type { NextFunction, Request, Response } from "express";
-import {insertLogs} from "./logs.service.js";
+import {getLogs, insertLogs} from "./logs.service.js";
 import {type ValidateLogsResult, LogsError} from "./logs.type.js";
-export async function createLogs(
+export async function createLogsController(
   req: Request,
   res: Response,
   next: NextFunction,
@@ -34,4 +34,17 @@ export async function createLogs(
     catch (error: unknown) {
         next(error);
     }
+}
+
+export async function getLogsController(
+  req: Request,
+  res: Response,
+  next: NextFunction,
+): Promise<void> {
+  try {
+    const result = await getLogs(req.query);
+    res.status(200).json(result);
+  } catch (error: unknown) {
+    next(error);
+  }
 }

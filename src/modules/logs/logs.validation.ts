@@ -5,7 +5,8 @@ import {
   type Log,
   type ValidateLogsResult,
   logsFiltersSchema,
-  type LogsFilters
+  type LogsFilters,
+  type ParsedLogsFilters
 } from "./logs.type.js";
 
 export async function validLogs(logs: unknown): Promise<ValidateLogsResult> {
@@ -45,7 +46,7 @@ export async function validLogs(logs: unknown): Promise<ValidateLogsResult> {
 
 export function validateLogsFilters(
   input: unknown,
-): LogsFilters {
+): ParsedLogsFilters {
   const result = logsFiltersSchema.safeParse(input);
 
   if (!result.success) {
@@ -66,5 +67,54 @@ export function validateLogsFilters(
     );
   }
 
-  return result.data;
+  if (
+    typeof input !== "object" ||
+    input === null ||
+    Array.isArray(input)
+  ) {
+    throw new LogsError(
+      "INVALID_QUERY_PARAMETERS",
+      400,
+      "Invalid query parameters",
+    );
+  }
+  const rawAttributes =
+    (input as Record<string, unknown>).attributes;
+
+  const attributes: Record<string, string> = {};
+
+  if (rawAttributes !== undefined) {
+    if (
+      typeof rawAttributes !== "object" ||
+      rawAttributes === null ||
+      Array.isArray(rawAttributes)
+    ) {
+      throw new LogsError(
+        "INVALID_QUERY_PARAMETERS",
+        400,
+        "Attributes must be an object",
+      );
+    }
+
+    for (const [key, value] of Object.entries(rawAttributes)) {
+      if (
+        typeof value !== "string" &&
+        typeof value !== "number" &&
+        typeof value !== "boolean"
+      ) {
+        throw new LogsError(
+          "INVALID_QUERY_PARAMETERS",
+          400,
+          `Attribute '${key}' must be a string, number, or boolean`,
+        );
+      }
+
+      attributes[key] = String(value);
+    }
+  }
+
+  return {
+    ...result.data,
+    attributes,
+  } ;
 }
