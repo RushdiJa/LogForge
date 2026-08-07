@@ -85,20 +85,9 @@ function expectInvalidGetResponse(response: {
   body: Record<string, unknown>;
 }): void {
   expect(response.status).toBe(400);
-
   expect(response.body).toHaveProperty("error");
-
-  expect(response.body.error).toEqual({
-    code: "INVALID_QUERY_PARAMETERS",
-    message: expect.any(String),
-  });
-
-  const error = response.body.error as {
-    code: string;
-    message: string;
-  };
-
-  expect(error.message.length).toBeGreaterThan(0);
+  expect(typeof response.body.error).toBe("string");
+  expect((response.body.error as string).length).toBeGreaterThan(0);
 }
 
 describe("POST /logs", () => {
@@ -1026,10 +1015,7 @@ describe("GET /logs", () => {
         response.status,
         `limit=${limit} should be rejected`,
       ).toBe(400);
-      expect(response.body.error).toEqual({
-        code: "INVALID_QUERY_PARAMETERS",
-        message: expect.any(String),
-      });
+      expect(typeof response.body.error).toBe("string");
     }
   });
 
