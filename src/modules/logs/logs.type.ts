@@ -175,3 +175,38 @@ export type ParsedLogsFilters =
   LogsFilters & {
     attributes: AttributeFilters;
 };
+
+// =
+export const aggregateFiltersSchema = z
+  .object({
+    service: z.string().min(1).optional(),
+
+    level: z
+      .enum(["debug", "info", "warn", "error"])
+      .optional(),
+
+    since: queryTimestampSchema,
+
+    until: queryTimestampSchema,
+
+    bucket: z.enum([
+      "1m",
+      "5m",
+      "1h",
+      "1d",
+    ]),
+
+    group_by: z
+      .enum(["service", "level"])
+      .optional(),
+
+    q: z.string().optional(),
+  })
+  .refine(
+    (filters) => filters.until > filters.since,
+    {
+      path: ["until"],
+      message: "Until must be later than since",
+    },
+  );
+export type AggregateFilters = z.output<typeof aggregateFiltersSchema>;
