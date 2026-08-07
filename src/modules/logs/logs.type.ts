@@ -209,4 +209,8 @@ export const aggregateFiltersSchema = z
       message: "Until must be later than since",
     },
   );
-export type AggregateFilters = z.output<typeof aggregateFiltersSchema>;
+type AggregateFilters = z.output<typeof aggregateFiltersSchema>;
+export type ParsedAggregateFilters =
+  AggregateFilters & {
+    attributes: AttributeFilters;
+  };  
