@@ -29,7 +29,7 @@ export const logSchema = z.object({
   service: z.string().min(1, "Service is required"),
   message: z.string().min(1, "Message is required"),
   attributes: attributesSchema.default({}),
-});
+}).strict();
 
 export type LogInput = z.input<typeof logSchema>;
 
@@ -51,7 +51,8 @@ export type LogsErrorCode =
   | "INVALID_REQUEST_BODY"
   | "LOGS_DATABASE_ERROR"
   | "UNSUPPORTED_MEDIA_TYPE"
-  ;
+  | "INVALID_QUERY_PARAMETERS";
+
 export class LogsError extends Error {
   public readonly code: LogsErrorCode;
   public readonly statusCode: number;
@@ -66,3 +67,111 @@ export class LogsError extends Error {
     this.name = "LogsError";
   }
 }
+
+// =
+
+const queryTimestampSchema = z
+  .string()
+  .regex(
+    ISO_8601_TIMESTAMP,
+    "Timestamp must be valid ISO 8601",
+  )
+  .refine(
+    (value) => !Number.isNaN(Date.parse(value)),
+    "Timestamp is not a valid date",
+  )
+  .transform((value) => new Date(value));
+
+const cursorPayloadSchema = z
+  .object({
+    timestamp: queryTimestampSchema,
+
+    id: z
+      .string()
+      .regex(/^\d+$/, "Cursor id must be numeric")
+      .transform(Number),
+  })
+  .strict();
+
+const cursorSchema = z
+  .string()
+  .min(1, "Cursor must not be empty")
+  .transform((value, ctx) => {
+    try {
+      const decoded = Buffer
+        .from(value, "base64url")
+        .toString("utf8");
+
+      const payload = JSON.parse(decoded);
+
+      const result = cursorPayloadSchema.safeParse(payload);
+
+      if (!result.success) {
+        ctx.addIssue({
+          code: "custom",
+          message: "Cursor is invalid or malformed",
+        });
+
+        return z.NEVER;
+      }
+
+      return result.data;
+    } catch {
+      ctx.addIssue({
+        code: "custom",
+        message: "Cursor is invalid or malformed",
+      });
+
+      return z.NEVER;
+    }
+  });
+
+export const logsFiltersSchema = z
+  .object({
+    service: z.string().min(1).optional(),
+
+    level: z
+      .enum(["debug", "info", "warn", "error"])
+      .optional(),
+
+    since: queryTimestampSchema.optional(),
+
+    until: queryTimestampSchema.optional(),
+
+    q: z.string().optional(),
+
+    limit: z.coerce
+      .number()
+      .int()
+      .min(1)
+      .max(1000)
+      .default(100),
+
+    cursor: cursorSchema.optional(),
+  })
+  .refine(
+    (filters) =>
+      !filters.since ||
+      !filters.until ||
+      filters.until > filters.since,
+    {
+      path: ["until"],
+      message: "Until must be later than since",
+    },
+  );
+
+export type LogsCursor = z.output<
+  typeof cursorPayloadSchema
+>;
+
+export type LogsFilters = z.output<
+  typeof logsFiltersSchema
+>;
+
+export type AttributeFilters =
+  Record<string, string>;
+
+export type ParsedLogsFilters =
+  LogsFilters & {
+    attributes: AttributeFilters;
+};
