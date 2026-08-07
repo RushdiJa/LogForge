@@ -1,6 +1,16 @@
 import { db } from "../../db/index.js";
 import { logs } from "../../db/schema.js";
-import { type Log , LogsError} from "./logs.type.js";
+import { type Log , LogsError, type LogsFilters} from "./logs.type.js";
+import {
+  and,
+  desc,
+  eq,
+  gte,
+  lt,
+  type SQL,
+  sql,
+} from "drizzle-orm";
+
 
 export async function insertLog(log: Log) : Promise<void> {
     console.log("Inserting log: ", log);
@@ -16,3 +26,4 @@ export async function insertLog(log: Log) : Promise<void> {
         );
     }
 }
+

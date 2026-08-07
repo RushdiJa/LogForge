@@ -29,7 +29,7 @@ export const logSchema = z.object({
   service: z.string().min(1, "Service is required"),
   message: z.string().min(1, "Message is required"),
   attributes: attributesSchema.default({}),
-});
+}).strict();
 
 export type LogInput = z.input<typeof logSchema>;
 
@@ -51,7 +51,8 @@ export type LogsErrorCode =
   | "INVALID_REQUEST_BODY"
   | "LOGS_DATABASE_ERROR"
   | "UNSUPPORTED_MEDIA_TYPE"
-  ;
+  | "INVALID_QUERY_PARAMETERS";
+
 export class LogsError extends Error {
   public readonly code: LogsErrorCode;
   public readonly statusCode: number;
@@ -67,7 +68,8 @@ export class LogsError extends Error {
   }
 }
 
-// ====
+// =
+
 const queryTimestampSchema = z
   .string()
   .regex(
@@ -75,27 +77,58 @@ const queryTimestampSchema = z
     "Timestamp must be valid ISO 8601",
   )
   .refine(
-    (timestamp) => !Number.isNaN(Date.parse(timestamp)),
+    (value) => !Number.isNaN(Date.parse(value)),
     "Timestamp is not a valid date",
   )
-  .transform((timestamp) => new Date(timestamp));
+  .transform((value) => new Date(value));
 
-const limitSchema = z
+const cursorPayloadSchema = z
+  .object({
+    timestamp: queryTimestampSchema,
+
+    id: z
+      .string()
+      .regex(/^\d+$/, "Cursor id must be numeric")
+      .transform(BigInt),
+  })
+  .strict();
+
+const cursorSchema = z
   .string()
-  .regex(/^\d+$/, "Limit must be a numeric value")
-  .transform(Number)
-  .refine(
-    (limit) => limit >= 1 && limit <= 1000,
-    "Limit must be between 1 and 1000",
-  )
-  .default(100);
+  .min(1, "Cursor must not be empty")
+  .transform((value, ctx) => {
+    try {
+      const decoded = Buffer
+        .from(value, "base64url")
+        .toString("utf8");
+
+      const payload = JSON.parse(decoded);
+
+      const result = cursorPayloadSchema.safeParse(payload);
+
+      if (!result.success) {
+        ctx.addIssue({
+          code: "custom",
+          message: "Cursor is invalid or malformed",
+        });
+
+        return z.NEVER;
+      }
+
+      return result.data;
+    } catch {
+      ctx.addIssue({
+        code: "custom",
+        message: "Cursor is invalid or malformed",
+      });
+
+      return z.NEVER;
+    }
+  });
 
 export const logsFiltersSchema = z
   .object({
-    service: z
-      .string()
-      .min(1, "Service must not be empty")
-      .optional(),
+    service: z.string().min(1).optional(),
 
     level: z
       .enum(["debug", "info", "warn", "error"])
@@ -107,31 +140,38 @@ export const logsFiltersSchema = z
 
     q: z.string().optional(),
 
-    limit: limitSchema,
+    limit: z.coerce
+      .number()
+      .int()
+      .min(1)
+      .max(1000)
+      .default(100),
 
-    cursor: z
-      .string()
-      .min(1, "Cursor must not be empty")
-      .optional(),
+    cursor: cursorSchema.optional(),
   })
   .refine(
-    (filters) => {
-      if (!filters.since || !filters.until) {
-        return true;
-      }
-
-      return filters.until.getTime() > filters.since.getTime();
-    },
+    (filters) =>
+      !filters.since ||
+      !filters.until ||
+      filters.until > filters.since,
     {
       path: ["until"],
       message: "Until must be later than since",
     },
   );
 
-export type LogsFiltersInput = z.input<
-  typeof logsFiltersSchema
+export type LogsCursor = z.output<
+  typeof cursorPayloadSchema
 >;
 
 export type LogsFilters = z.output<
   typeof logsFiltersSchema
 >;
+
+export type AttributeFilters =
+  Record<string, string>;
+
+export type ParsedLogsFilters =
+  LogsFilters & {
+    attributes: AttributeFilters;
+};

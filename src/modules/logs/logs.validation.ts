@@ -3,7 +3,10 @@ import {
   LogsError,
   type RejectedLog,
   type Log,
-  type ValidateLogsResult} from "./logs.type.js";
+  type ValidateLogsResult,
+  logsFiltersSchema,
+  type LogsFilters
+} from "./logs.type.js";
 
 export async function validLogs(logs: unknown): Promise<ValidateLogsResult> {
     if (!Array.isArray(logs)) {
@@ -34,10 +37,34 @@ export async function validLogs(logs: unknown): Promise<ValidateLogsResult> {
             });
         }
     });
-
     return {
         valid,
         rejected,
     };
+}
 
+export function validateLogsFilters(
+  input: unknown,
+): LogsFilters {
+  const result = logsFiltersSchema.safeParse(input);
+
+  if (!result.success) {
+    const message = result.error.issues
+      .map((issue) => {
+        const field = issue.path.join(".");
+
+        return field
+          ? `${field}: ${issue.message}`
+          : issue.message;
+      })
+      .join(", ");
+
+    throw new LogsError(
+      "INVALID_QUERY_PARAMETERS",
+      400,
+      message,
+    );
+  }
+
+  return result.data;
 }
