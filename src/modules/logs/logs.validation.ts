@@ -47,6 +47,17 @@ export async function validLogs(logs: unknown): Promise<ValidateLogsResult> {
 export function validateLogsFilters(
   input: unknown,
 ): ParsedLogsFilters {
+  if (
+    typeof input !== "object" ||
+    input === null ||
+    Array.isArray(input)
+  ) {
+    throw new LogsError(
+      "INVALID_QUERY_PARAMETERS",
+      400,
+      "Invalid query parameters",
+    );
+  }
   const result = logsFiltersSchema.safeParse(input);
 
   if (!result.success) {
@@ -67,54 +78,44 @@ export function validateLogsFilters(
     );
   }
 
-  if (
-    typeof input !== "object" ||
-    input === null ||
-    Array.isArray(input)
-  ) {
-    throw new LogsError(
-      "INVALID_QUERY_PARAMETERS",
-      400,
-      "Invalid query parameters",
-    );
-  }
-  const rawAttributes =
-    (input as Record<string, unknown>).attributes;
+  
+
+  const query = input as Record<string, unknown>;
 
   const attributes: Record<string, string> = {};
 
-  if (rawAttributes !== undefined) {
+  for (const [key, value] of Object.entries(query)) {
+    if (!key.startsWith("attr.")) {
+      continue;
+    }
+
+    const attributeKey = key.slice("attr.".length);
+
+    if (attributeKey.length === 0) {
+      throw new LogsError(
+        "INVALID_QUERY_PARAMETERS",
+        400,
+        "Attribute key must not be empty",
+      );
+    }
+
     if (
-      typeof rawAttributes !== "object" ||
-      rawAttributes === null ||
-      Array.isArray(rawAttributes)
+      typeof value !== "string" &&
+      typeof value !== "number" &&
+      typeof value !== "boolean"
     ) {
       throw new LogsError(
         "INVALID_QUERY_PARAMETERS",
         400,
-        "Attributes must be an object",
+        `Attribute '${attributeKey}' must be a string, number, or boolean`,
       );
     }
 
-    for (const [key, value] of Object.entries(rawAttributes)) {
-      if (
-        typeof value !== "string" &&
-        typeof value !== "number" &&
-        typeof value !== "boolean"
-      ) {
-        throw new LogsError(
-          "INVALID_QUERY_PARAMETERS",
-          400,
-          `Attribute '${key}' must be a string, number, or boolean`,
-        );
-      }
-
-      attributes[key] = String(value);
-    }
+    attributes[attributeKey] = String(value);
   }
 
   return {
     ...result.data,
     attributes,
-  } ;
+  };
 }
