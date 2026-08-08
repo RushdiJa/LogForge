@@ -5,8 +5,9 @@ import {
   type Log,
   type ValidateLogsResult,
   logsFiltersSchema,
-  type LogsFilters,
-  type ParsedLogsFilters
+  type ParsedLogsFilters,
+  type ParsedAggregateFilters,
+  aggregateFiltersSchema
 } from "./logs.type.js";
 
 export async function validLogs(logs: unknown): Promise<ValidateLogsResult> {
@@ -118,4 +119,74 @@ export function validateLogsFilters(
     ...result.data,
     attributes,
   };
+}
+
+export function AggregateFilters(input: unknown) : ParsedAggregateFilters{
+    if (
+        typeof input !== "object" ||
+        input === null ||
+        Array.isArray(input)
+    ) {
+        throw new LogsError(
+            "INVALID_QUERY_PARAMETERS",
+            400,
+            "Invalid query parameters",
+        );
+    }
+    const result = aggregateFiltersSchema.safeParse(input);
+    if (!result.success) {
+        const message = result.error.issues
+        .map((issue) => {
+        const field = issue.path.join(".");
+
+        return field
+            ? `${field}: ${issue.message}`
+            : issue.message;
+        })
+        .join(", ");
+
+        throw new LogsError(
+            "INVALID_QUERY_PARAMETERS",
+            400,
+            message,
+        );
+    }
+    const query = input as Record<string, unknown>;
+
+    const attributes: Record<string, string> = {};
+
+    for (const [key, value] of Object.entries(query)) {
+    if (!key.startsWith("attr.")) {
+        continue;
+    }
+
+    const attributeKey = key.slice("attr.".length);
+
+    if (attributeKey.length === 0) {
+        throw new LogsError(
+        "INVALID_QUERY_PARAMETERS",
+        400,
+        "Attribute key must not be empty",
+        );
+    }
+
+    if (
+        typeof value !== "string" &&
+        typeof value !== "number" &&
+        typeof value !== "boolean"
+    ) {
+        throw new LogsError(
+        "INVALID_QUERY_PARAMETERS",
+        400,
+        `Attribute '${attributeKey}' must be a string, number, or boolean`,
+        );
+    }
+
+        attributes[attributeKey] = String(value);
+    }
+
+    return {
+        ...result.data,
+        attributes,
+    };
 }

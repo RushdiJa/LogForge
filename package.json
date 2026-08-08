@@ -1,6 +1,6 @@
 {
   "name": "logforge",
-  "version": "0.4.1",
+  "version": "0.5.0",
   "description": "High-throughput structured log ingestion, querying, and aggregation service",
   "type": "module",
   "main": "dist/server.js",

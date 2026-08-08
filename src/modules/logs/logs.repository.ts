@@ -1,6 +1,6 @@
 import { db } from "../../db/index.js";
 import { logs } from "../../db/schema.js";
-import { type Log , LogsError, type ParsedLogsFilters} from "./logs.type.js";
+import { type Log , LogsError, type ParsedAggregateFilters, type ParsedLogsFilters} from "./logs.type.js";
 import {
   and,
   desc,
@@ -10,7 +10,8 @@ import {
   type SQL,
   or,
   ilike,
-  sql
+  sql,
+  asc
   
 } from "drizzle-orm";
 
@@ -103,4 +104,133 @@ export async function queryLogs(
         desc(logs.id),
     )
     .limit(filters.limit + 1);
+}
+
+export type AggregateRow = {
+  start: Date;
+  group: string | null;
+  count: number;
+};
+function getBucketInterval(
+  bucket: ParsedAggregateFilters["bucket"],
+): SQL {
+  switch (bucket) {
+    case "1m":
+      return sql`INTERVAL '1 minute'`;
+
+    case "5m":
+      return sql`INTERVAL '5 minutes'`;
+
+    case "1h":
+      return sql`INTERVAL '1 hour'`;
+
+    case "1d":
+      return sql`INTERVAL '1 day'`;
+  }
+}
+export async function aggregateLogs(
+  filters: ParsedAggregateFilters,
+): Promise<AggregateRow[]> {
+  const conditions: SQL[] = [];
+
+  // since is inclusive
+  conditions.push(
+    gte(logs.timestamp, filters.since),
+  );
+
+  // until is exclusive
+  conditions.push(
+    lt(logs.timestamp, filters.until),
+  );
+
+  if (filters.service !== undefined) {
+    conditions.push(
+      eq(logs.service, filters.service),
+    );
+  }
+
+  if (filters.level !== undefined) {
+    conditions.push(
+      eq(logs.level, filters.level),
+    );
+  }
+
+  if (filters.q !== undefined) {
+    conditions.push(
+      ilike(
+        logs.message,
+        `%${escapeLike(filters.q)}%`,
+      ),
+    );
+  }
+
+  for (const [key, value] of Object.entries(
+    filters.attributes,
+  )) {
+    conditions.push(
+      eq(
+        jsonbTextAttribute(key),
+        value,
+      ),
+    );
+  }
+
+  const interval = getBucketInterval(filters.bucket);
+
+  const bucketStart = sql<Date>`
+    date_bin(
+      ${interval},
+      ${logs.timestamp},
+      TIMESTAMPTZ '1970-01-01 00:00:00+00'
+    )
+  `;
+
+  if (filters.group_by === "service") {
+    return db
+      .select({
+        start: bucketStart,
+        group: logs.service,
+        count: sql<number>`count(*)::int`,
+      })
+      .from(logs)
+      .where(and(...conditions))
+      .groupBy(
+        bucketStart,
+        logs.service,
+      )
+      .orderBy(
+        asc(bucketStart),
+        asc(logs.service),
+      );
+  }
+
+  if (filters.group_by === "level") {
+    return db
+      .select({
+        start: bucketStart,
+        group: logs.level,
+        count: sql<number>`count(*)::int`,
+      })
+      .from(logs)
+      .where(and(...conditions))
+      .groupBy(
+        bucketStart,
+        logs.level,
+      )
+      .orderBy(
+        asc(bucketStart),
+        asc(logs.level),
+      );
+  }
+
+  return db
+    .select({
+      start: bucketStart,
+      group: sql<null>`NULL`,
+      count: sql<number>`count(*)::int`,
+    })
+    .from(logs)
+    .where(and(...conditions))
+    .groupBy(bucketStart)
+    .orderBy(asc(bucketStart));
 }
