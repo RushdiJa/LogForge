@@ -1,7 +1,8 @@
-import {validateLogsFilters, validLogs} from "./logs.validation.js";
-import {insertLog, queryLogs} from "./logs.repository.js";
-import {type LogsFilters, type ParsedLogsFilters, type ValidateLogsResult} from "./logs.type.js";
-import { encodeLogsCursor } from "./logs.utilities.ts";
+import {AggregateFilters, validateLogsFilters, validLogs} from "./logs.validation.js";
+import {aggregateLogs, insertLog, queryLogs} from "./logs.repository.js";
+import {type LogsFilters, type ParsedAggregateFilters, type ParsedLogsFilters, type ValidateLogsResult} from "./logs.type.js";
+import { encodeLogsCursor } from "./logs.utilities.js";
+
 export async function insertLogs(logs: unknown) : Promise<ValidateLogsResult> {
     const result : ValidateLogsResult = await validLogs(logs);
     await Promise.all(
@@ -36,4 +37,21 @@ export async function getLogs(filters: unknown){
         next_cursor: nextCursor,
     };
 
+}
+
+
+
+export async function getLogsAggregate(filters: unknown) {
+  const validatedFilters =
+    AggregateFilters(filters);
+
+  const resultLogs =
+    await aggregateLogs(validatedFilters);
+
+  return {
+    buckets: resultLogs.map((bucket) => ({
+      ...bucket,
+      start: new Date(bucket.start).toISOString(),
+    })),
+  };
 }
