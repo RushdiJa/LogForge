@@ -39,6 +39,16 @@ type GetLogsResponse = {
   next_cursor: string | null;
 };
 
+type AggregateBucket = {
+  start: string;
+  group: string | null;
+  count: number;
+};
+
+type AggregateResponse = {
+  buckets: AggregateBucket[];
+};
+
 function generateAttributeKey(index: number): string {
   return `field_${index}_${(index * 7919) % 100_000}`;
 }
@@ -88,6 +98,32 @@ function expectInvalidGetResponse(response: {
   expect(response.body).toHaveProperty("error");
   expect(typeof response.body.error).toBe("string");
   expect((response.body.error as string).length).toBeGreaterThan(0);
+}
+
+function expectBucketsSortedAscending(
+  buckets: AggregateBucket[],
+): void {
+  for (let index = 1; index < buckets.length; index++) {
+    const previous = buckets[index - 1]!;
+    const current = buckets[index]!;
+
+    expect(
+      Date.parse(previous.start),
+      `bucket ${index - 1} must not start after bucket ${index}`,
+    ).toBeLessThanOrEqual(Date.parse(current.start));
+  }
+}
+
+function findAggregateBucket(
+  buckets: AggregateBucket[],
+  start: string,
+  group: string | null,
+): AggregateBucket | undefined {
+  return buckets.find(
+    (bucket) =>
+      bucket.start === start &&
+      bucket.group === group,
+  );
 }
 
 describe("POST /logs", () => {
@@ -1039,6 +1075,653 @@ describe("GET /logs", () => {
     for (const query of invalidQueries) {
       const response = await request(BASE_URL)
         .get("/logs")
+        .query(query);
+
+      expectInvalidGetResponse(response);
+    }
+  });
+});
+
+describe("GET /logs/aggregate", () => {
+  const runId = `aggregate-${Date.now()}-${Math.random()
+    .toString(36)
+    .slice(2)}`;
+
+  const checkoutService = `aggregate-checkout-${runId}`;
+  const authService = `aggregate-auth-${runId}`;
+  const workerService = `aggregate-worker-${runId}`;
+  const billingService = `aggregate-billing-${runId}`;
+
+  const now = new Date();
+
+  const aggregateBaseMs = Date.UTC(
+    now.getUTCFullYear(),
+    now.getUTCMonth(),
+    now.getUTCDate() - 3,
+    0,
+    0,
+    0,
+    0,
+  );
+
+  const aggregateBase = new Date(aggregateBaseMs);
+
+  const at = (offsetMs: number): string =>
+    new Date(aggregateBaseMs + offsetMs).toISOString();
+
+  const minute = 60_000;
+  const hour = 60 * minute;
+  const day = 24 * hour;
+
+  const aggregateLogsFixture: TestLog[] = [
+    {
+      timestamp: at(0),
+      level: "error",
+      service: checkoutService,
+      message: `Payment DeCLiNeD ${runId}`,
+      attributes: {
+        aggregate_run_id: runId,
+        user_id: "user-1",
+        retries: 3,
+        successful: false,
+        region: "eu-west",
+        combo: "full-match",
+      },
+    },
+    {
+      timestamp: at(20_000),
+      level: "error",
+      service: checkoutService,
+      message: `payment declined retry ${runId}`,
+      attributes: {
+        aggregate_run_id: runId,
+        user_id: "user-2",
+        retries: 3,
+        successful: true,
+        region: "eu-west",
+        combo: "secondary",
+      },
+    },
+    {
+      timestamp: at(59_000),
+      level: "info",
+      service: authService,
+      message: `login ok ${runId}`,
+      attributes: {
+        aggregate_run_id: runId,
+        user_id: "user-3",
+        retries: 0,
+        successful: true,
+        region: "us-east",
+      },
+    },
+    {
+      timestamp: at(minute),
+      level: "warn",
+      service: checkoutService,
+      message: `checkout slow ${runId}`,
+      attributes: {
+        aggregate_run_id: runId,
+        user_id: "user-4",
+        retries: 1,
+        successful: true,
+        region: "eu-west",
+      },
+    },
+    {
+      timestamp: at(minute + 30_000),
+      level: "error",
+      service: authService,
+      message: `AUTH FAILED ${runId}`,
+      attributes: {
+        aggregate_run_id: runId,
+        user_id: "user-5",
+        retries: 2,
+        successful: false,
+        region: "eu-west",
+      },
+    },
+    {
+      timestamp: at(5 * minute - 1_000),
+      level: "error",
+      service: checkoutService,
+      message: `literal 100%_done ${runId}`,
+      attributes: {
+        aggregate_run_id: runId,
+        user_id: "user-6",
+        retries: 4,
+        successful: false,
+        region: "eu-west",
+      },
+    },
+    {
+      timestamp: at(5 * minute),
+      level: "error",
+      service: checkoutService,
+      message: `literal 100Xdone ${runId}`,
+      attributes: {
+        aggregate_run_id: runId,
+        user_id: "user-7",
+        retries: 4,
+        successful: false,
+        region: "eu-west",
+      },
+    },
+    {
+      timestamp: at(5 * minute + 10_000),
+      level: "debug",
+      service: workerService,
+      message: `worker started ${runId}`,
+      attributes: {
+        aggregate_run_id: runId,
+        user_id: "user-8",
+        retries: 0,
+        successful: true,
+        region: "eu-central",
+      },
+    },
+    {
+      timestamp: at(10 * minute - 1_000),
+      level: "info",
+      service: checkoutService,
+      message: `checkout done ${runId}`,
+      attributes: {
+        aggregate_run_id: runId,
+        user_id: "user-9",
+        retries: 0,
+        successful: true,
+        region: "eu-west",
+      },
+    },
+    {
+      timestamp: at(10 * minute),
+      level: "warn",
+      service: authService,
+      message: `auth warning ${runId}`,
+      attributes: {
+        aggregate_run_id: runId,
+        user_id: "user-10",
+        retries: 1,
+        successful: false,
+        region: "us-east",
+      },
+    },
+    {
+      timestamp: at(hour - 1_000),
+      level: "error",
+      service: checkoutService,
+      message: `last log in first hour ${runId}`,
+      attributes: {
+        aggregate_run_id: runId,
+        user_id: "user-11",
+        retries: 5,
+        successful: false,
+        region: "eu-west",
+      },
+    },
+    {
+      timestamp: at(hour),
+      level: "error",
+      service: authService,
+      message: `first log in second hour ${runId}`,
+      attributes: {
+        aggregate_run_id: runId,
+        user_id: "user-12",
+        retries: 2,
+        successful: false,
+        region: "eu-west",
+      },
+    },
+    {
+      timestamp: at(hour + 30 * minute),
+      level: "info",
+      service: checkoutService,
+      message: `middle of second hour ${runId}`,
+      attributes: {
+        aggregate_run_id: runId,
+        user_id: "user-13",
+        retries: 0,
+        successful: true,
+        region: "eu-west",
+      },
+    },
+    {
+      timestamp: at(day),
+      level: "error",
+      service: billingService,
+      message: `first log on next day ${runId}`,
+      attributes: {
+        aggregate_run_id: runId,
+        user_id: "user-14",
+        retries: 3,
+        successful: false,
+        region: "eu-west",
+      },
+    },
+    {
+      timestamp: at(day + 5 * minute),
+      level: "error",
+      service: checkoutService,
+      message: `checkout on next day ${runId}`,
+      attributes: {
+        aggregate_run_id: runId,
+        user_id: "user-15",
+        retries: 3,
+        successful: true,
+        region: "eu-west",
+      },
+    },
+  ];
+
+  beforeAll(async () => {
+    const response = await request(BASE_URL)
+      .post("/logs")
+      .set("Content-Type", "application/json")
+      .send({ logs: aggregateLogsFixture });
+
+    expect(response.status).toBe(200);
+    expect(response.body.accepted).toBe(
+      aggregateLogsFixture.length,
+    );
+    expect(response.body.rejected).toEqual([]);
+  });
+
+  // 21
+  it("aggregates into 1-minute buckets without grouping and returns group as null", async () => {
+    const response = await request(BASE_URL)
+      .get("/logs/aggregate")
+      .query({
+        since: at(0),
+        until: at(3 * minute),
+        bucket: "1m",
+        "attr.aggregate_run_id": runId,
+      });
+
+    expect(response.status).toBe(200);
+
+    const body = response.body as AggregateResponse;
+
+    expect(body.buckets).toHaveLength(2);
+    expectBucketsSortedAscending(body.buckets);
+
+    expect(body.buckets).toEqual([
+      {
+        start: at(0),
+        group: null,
+        count: 3,
+      },
+      {
+        start: at(minute),
+        group: null,
+        count: 2,
+      },
+    ]);
+  });
+
+  // 22
+  it("groups bucket counts by service", async () => {
+    const response = await request(BASE_URL)
+      .get("/logs/aggregate")
+      .query({
+        since: at(0),
+        until: at(minute),
+        bucket: "1m",
+        group_by: "service",
+        "attr.aggregate_run_id": runId,
+      });
+
+    expect(response.status).toBe(200);
+
+    const body = response.body as AggregateResponse;
+
+    expect(body.buckets).toHaveLength(2);
+
+    expect(
+      findAggregateBucket(
+        body.buckets,
+        at(0),
+        checkoutService,
+      ),
+    ).toEqual({
+      start: at(0),
+      group: checkoutService,
+      count: 2,
+    });
+
+    expect(
+      findAggregateBucket(
+        body.buckets,
+        at(0),
+        authService,
+      ),
+    ).toEqual({
+      start: at(0),
+      group: authService,
+      count: 1,
+    });
+  });
+
+  // 23
+  it("groups bucket counts by log level", async () => {
+    const response = await request(BASE_URL)
+      .get("/logs/aggregate")
+      .query({
+        since: at(0),
+        until: at(2 * minute),
+        bucket: "1m",
+        group_by: "level",
+        "attr.aggregate_run_id": runId,
+      });
+
+    expect(response.status).toBe(200);
+
+    const body = response.body as AggregateResponse;
+
+    expect(body.buckets).toHaveLength(4);
+
+    expect(
+      findAggregateBucket(
+        body.buckets,
+        at(0),
+        "error",
+      )?.count,
+    ).toBe(2);
+
+    expect(
+      findAggregateBucket(
+        body.buckets,
+        at(0),
+        "info",
+      )?.count,
+    ).toBe(1);
+
+    expect(
+  findAggregateBucket(
+        body.buckets,
+        at(minute),
+        "warn",
+      )?.count,
+    ).toBe(1);
+
+    expect(
+      findAggregateBucket(
+        body.buckets,
+        at(minute),
+        "error",
+      )?.count,
+    ).toBe(1);
+  });
+
+  // 24
+  it("freely combines service, level, q, and multiple attribute filters", async () => {
+    const response = await request(BASE_URL)
+      .get("/logs/aggregate")
+      .query({
+        since: at(0),
+        until: at(minute),
+        bucket: "1m",
+        service: checkoutService,
+        level: "error",
+        q: "PAYMENT declined",
+        "attr.aggregate_run_id": runId,
+        "attr.region": "eu-west",
+        "attr.retries": "3",
+        "attr.successful": "false",
+        "attr.combo": "full-match",
+      });
+
+    expect(response.status).toBe(200);
+
+    const body = response.body as AggregateResponse;
+
+    expect(body.buckets).toEqual([
+      {
+        start: at(0),
+        group: null,
+        count: 1,
+      },
+    ]);
+  });
+
+  // 25
+  it("treats percent and underscore in q as literal substring characters", async () => {
+    const response = await request(BASE_URL)
+      .get("/logs/aggregate")
+      .query({
+        since: at(4 * minute),
+        until: at(6 * minute),
+        bucket: "1m",
+        q: "%_done",
+        "attr.aggregate_run_id": runId,
+      });
+
+    expect(response.status).toBe(200);
+
+    const body = response.body as AggregateResponse;
+
+    expect(body.buckets).toEqual([
+      {
+        start: at(4 * minute),
+        group: null,
+        count: 1,
+      },
+    ]);
+  });
+
+  // 26
+  it("treats since as inclusive and until as exclusive on exact bucket boundaries", async () => {
+    const response = await request(BASE_URL)
+      .get("/logs/aggregate")
+      .query({
+        since: at(5 * minute),
+        until: at(10 * minute),
+        bucket: "5m",
+        "attr.aggregate_run_id": runId,
+      });
+
+    expect(response.status).toBe(200);
+
+    const body = response.body as AggregateResponse;
+
+    expect(body.buckets).toEqual([
+      {
+        start: at(5 * minute),
+        group: null,
+        count: 3,
+      },
+    ]);
+  });
+
+  // 27
+  it("supports every allowed bucket size with correct bucket boundaries", async () => {
+    const fiveMinuteResponse = await request(BASE_URL)
+      .get("/logs/aggregate")
+      .query({
+        since: at(0),
+        until: at(11 * minute),
+        bucket: "5m",
+        "attr.aggregate_run_id": runId,
+      });
+
+    expect(fiveMinuteResponse.status).toBe(200);
+    expect(
+      (fiveMinuteResponse.body as AggregateResponse).buckets,
+    ).toEqual([
+      {
+        start: at(0),
+        group: null,
+        count: 6,
+      },
+      {
+        start: at(5 * minute),
+        group: null,
+        count: 3,
+      },
+      {
+        start: at(10 * minute),
+        group: null,
+        count: 1,
+      },
+    ]);
+
+    const oneHourResponse = await request(BASE_URL)
+      .get("/logs/aggregate")
+      .query({
+        since: at(0),
+        until: at(2 * hour),
+        bucket: "1h",
+        "attr.aggregate_run_id": runId,
+      });
+
+    expect(oneHourResponse.status).toBe(200);
+    expect(
+      (oneHourResponse.body as AggregateResponse).buckets,
+    ).toEqual([
+      {
+        start: at(0),
+        group: null,
+        count: 11,
+      },
+      {
+        start: at(hour),
+        group: null,
+        count: 2,
+      },
+    ]);
+
+    const oneDayResponse = await request(BASE_URL)
+      .get("/logs/aggregate")
+      .query({
+        since: at(0),
+        until: at(2 * day),
+        bucket: "1d",
+        "attr.aggregate_run_id": runId,
+      });
+
+    expect(oneDayResponse.status).toBe(200);
+    expect(
+      (oneDayResponse.body as AggregateResponse).buckets,
+    ).toEqual([
+      {
+        start: at(0),
+        group: null,
+        count: 13,
+      },
+      {
+        start: at(day),
+        group: null,
+        count: 2,
+      },
+    ]);
+  });
+
+  // 28
+  it("omits empty buckets instead of returning zero-count rows", async () => {
+    const response = await request(BASE_URL)
+      .get("/logs/aggregate")
+      .query({
+        since: at(0),
+        until: at(5 * minute),
+        bucket: "1m",
+        "attr.aggregate_run_id": runId,
+      });
+
+    expect(response.status).toBe(200);
+
+    const body = response.body as AggregateResponse;
+
+    expect(body.buckets.map((bucket) => bucket.start)).toEqual([
+      at(0),
+      at(minute),
+      at(4 * minute),
+    ]);
+
+    for (const bucket of body.buckets) {
+      expect(bucket.count).toBeGreaterThan(0);
+    }
+  });
+
+  // 29
+  it("returns an empty buckets array when no logs match the filters", async () => {
+    const response = await request(BASE_URL)
+      .get("/logs/aggregate")
+      .query({
+        since: at(2 * day),
+        until: at(2 * day + hour),
+        bucket: "1m",
+        "attr.aggregate_run_id": runId,
+      });
+
+    expect(response.status).toBe(200);
+    expect(response.body).toEqual({
+      buckets: [],
+    });
+  });
+
+  // 30
+  it("returns 400 for missing or invalid aggregation parameters", async () => {
+    const validSince = at(0);
+    const validUntil = at(hour);
+
+    const invalidQueries: Record<
+      string,
+      string
+    >[] = [
+      {
+        until: validUntil,
+        bucket: "1m",
+      },
+      {
+        since: validSince,
+        bucket: "1m",
+      },
+      {
+        since: validSince,
+        until: validUntil,
+      },
+      {
+        since: "not-an-iso-timestamp",
+        until: validUntil,
+        bucket: "1m",
+      },
+      {
+        since: validSince,
+        until: "not-an-iso-timestamp",
+        bucket: "1m",
+      },
+      {
+        since: validSince,
+        until: validUntil,
+        bucket: "10m",
+      },
+      {
+        since: validSince,
+        until: validUntil,
+        bucket: "1m",
+        group_by: "message",
+      },
+      {
+        since: validSince,
+        until: validUntil,
+        bucket: "1m",
+        level: "critical",
+      },
+      {
+        since: validUntil,
+        until: validSince,
+        bucket: "1m",
+      },
+      {
+        since: validSince,
+        until: validUntil,
+        bucket: "1m",
+        "attr.": "42",
+      },
+    ];
+
+    for (const query of invalidQueries) {
+      const response = await request(BASE_URL)
+        .get("/logs/aggregate")
         .query(query);
 
       expectInvalidGetResponse(response);

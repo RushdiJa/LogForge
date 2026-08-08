@@ -159,7 +159,7 @@ export async function aggregateLogs(
     conditions.push(
       ilike(
         logs.message,
-        `%${filters.q}%`,
+        `%${escapeLike(filters.q)}%`,
       ),
     );
   }

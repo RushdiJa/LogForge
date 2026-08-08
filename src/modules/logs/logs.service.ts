@@ -39,10 +39,19 @@ export async function getLogs(filters: unknown){
 
 }
 
-export async function getLogsAggregate(filters: unknown){
-    const validateFilters : ParsedAggregateFilters = AggregateFilters(filters);
-    const resultLogs = await aggregateLogs(validateFilters);
-    return {
-        buckets: resultLogs
-    }
+
+
+export async function getLogsAggregate(filters: unknown) {
+  const validatedFilters =
+    AggregateFilters(filters);
+
+  const resultLogs =
+    await aggregateLogs(validatedFilters);
+
+  return {
+    buckets: resultLogs.map((bucket) => ({
+      ...bucket,
+      start: new Date(bucket.start).toISOString(),
+    })),
+  };
 }
