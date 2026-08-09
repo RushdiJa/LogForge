@@ -11,7 +11,6 @@ async function cleanup(): Promise<void> {
 }
 
 export function startRetentionJob(): void {
-  void cleanup();
-
-  setInterval(cleanup, RETENTION_INTERVAL_MS);
+    cleanup();
+    setInterval(cleanup, RETENTION_INTERVAL_MS);
 }

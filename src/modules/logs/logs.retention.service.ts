@@ -12,8 +12,9 @@ export async function runRetentionCleanup(): Promise<void> {
 
   let deletedCount: number;
 
-  do {
-    deletedCount =
-      await deleteExpiredLogsBatch(cutoff);
-  } while (deletedCount > 0);
+//   do {
+//     deletedCount =
+//       await deleteExpiredLogsBatch(cutoff);
+//   } while (deletedCount > 0);
 }
+
