@@ -1,6 +1,6 @@
 {
   "name": "logforge",
-  "version": "0.6.0",
+  "version": "0.6.1",
   "description": "High-throughput structured log ingestion, querying, and aggregation service",
   "type": "module",
   "main": "dist/server.js",
@@ -28,6 +28,7 @@
   "homepage": "https://github.com/RushdiJa/LogForge#readme",
   "devDependencies": {
     "@types/express": "^5.0.6",
+    "@types/k6": "^2.0.1",
     "@types/node": "^26.1.2",
     "@types/supertest": "^7.2.1",
     "drizzle-kit": "^0.31.10",

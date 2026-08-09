@@ -1,13 +1,13 @@
 import {AggregateFilters, validateLogsFilters, validLogs} from "./logs.validation.js";
-import {aggregateLogs, insertLog, queryLogs} from "./logs.repository.js";
+import {aggregateLogs, insertLog, insertLogsBatch, queryLogs} from "./logs.repository.js";
 import {type LogsFilters, type ParsedAggregateFilters, type ParsedLogsFilters, type ValidateLogsResult} from "./logs.type.js";
 import { encodeLogsCursor } from "./logs.utilities.js";
 
 export async function insertLogs(logs: unknown) : Promise<ValidateLogsResult> {
     const result : ValidateLogsResult = await validLogs(logs);
-    await Promise.all(
-        result.valid.map((log) => insertLog(log)),
-    );
+    if (result.valid.length > 0) {
+      await insertLogsBatch(result.valid);
+    }
     return result;
 }
 

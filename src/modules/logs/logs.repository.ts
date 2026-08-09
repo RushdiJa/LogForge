@@ -18,12 +18,10 @@ import {
 export type StoredLog = typeof logs.$inferSelect;
 
 export async function insertLog(log: Log) : Promise<void> {
-    console.log("Inserting log: ", log);
     try{
         await db.insert(logs).values(log).execute();
     }
     catch(error : unknown){
-        console.error("Failed to insert log:", error);
         throw new LogsError(
             "LOGS_DATABASE_ERROR",
             500,
@@ -233,4 +231,16 @@ export async function aggregateLogs(
     .where(and(...conditions))
     .groupBy(bucketStart)
     .orderBy(asc(bucketStart));
+}
+
+export async function insertLogsBatch(
+  logsToInsert: Log[],
+): Promise<void> {
+  if (logsToInsert.length === 0) {
+    return;
+  }
+
+  await db
+    .insert(logs)
+    .values(logsToInsert);
 }
