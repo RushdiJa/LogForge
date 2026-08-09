@@ -8,7 +8,7 @@ export function test() {
 export function createApp() : Express {
     const app: Express = express();
 
-    app.use(express.json());
+    app.use(express.json({limit: "1mb"}));
     app.use('/health', healthRouter);
     app.use('/logs', logsRouter);
     
