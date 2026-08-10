@@ -10,46 +10,59 @@ import exec from "k6/execution";
 const BASE_URL =
   __ENV.BASE_URL ?? "http://localhost:8080";
 
-const DAY_MS = 24 * 60 * 60 * 1000;
-const MONTH_MS = 28 * DAY_MS;
+const DAY_MS =
+  24 * 60 * 60 * 1000;
+
+const MONTH_MS =
+  28 * DAY_MS;
 
 /*
  * ============================================================
  * TARGETS
  * ============================================================
  *
- * Default ingestion load:
+ * Official-like LOAD test:
+ *
  *   15,000 logs/sec
- *   500 logs/request
- *   30 POST requests/sec
- *   67 seconds
- *   ~= 1,005,000 logs
+ *   100 logs/request
+ *   150 POST requests/sec
+ *   120 seconds
+ *
+ *   Total attempted logs:
+ *
+ *   15,000 * 120
+ *   = 1,800,000 logs
  */
 
 const TARGET_LOGS_PER_SECOND = Number(
-  __ENV.TARGET_LOGS_PER_SECOND ?? "15000",
+  __ENV.TARGET_LOGS_PER_SECOND ??
+    "15000",
 );
 
 const BATCH_SIZE = Number(
-  __ENV.BATCH_SIZE ?? "500",
+  __ENV.BATCH_SIZE ?? "100",
 );
 
 const INGESTION_RPS = Math.ceil(
-  TARGET_LOGS_PER_SECOND / BATCH_SIZE,
+  TARGET_LOGS_PER_SECOND /
+    BATCH_SIZE,
 );
 
 const INGESTION_DURATION =
-  __ENV.INGESTION_DURATION ?? "67s";
+  __ENV.INGESTION_DURATION ??
+  "120s";
 
 const TARGET_TOTAL_LOGS = Number(
-  __ENV.TARGET_TOTAL_LOGS ?? "1000000",
+  __ENV.TARGET_TOTAL_LOGS ??
+    "1800000",
 );
 
 /*
- * Normal queries run while ingestion is active.
- * The spec does not define an exact GET p95 target, so this test
- * uses 1 second as a strict default. Override with env if needed.
+ * ============================================================
+ * QUERY SETTINGS
+ * ============================================================
  */
+
 const QUERY_RPS = Number(
   __ENV.QUERY_RPS ?? "5",
 );
@@ -59,31 +72,56 @@ const QUERY_LIMIT = Number(
 );
 
 const QUERY_P95_TARGET_MS = Number(
-  __ENV.QUERY_P95_TARGET_MS ?? "1000",
+  __ENV.QUERY_P95_TARGET_MS ??
+    "1000",
 );
-
-const QUERY_START_TIME =
-  __ENV.QUERY_START_TIME ?? "5s";
-
-const QUERY_DURATION =
-  __ENV.QUERY_DURATION ?? "60s";
 
 /*
- * Aggregation runs at 1 request/sec for 60 seconds while ingestion
- * is active. With the default configuration we expect 60 attempts.
+ * Start queries immediately so reads overlap
+ * the whole ingestion test.
  */
+
+const QUERY_START_TIME =
+  __ENV.QUERY_START_TIME ??
+  "0s";
+
+const QUERY_DURATION =
+  __ENV.QUERY_DURATION ??
+  "120s";
+
+/*
+ * ============================================================
+ * AGGREGATION SETTINGS
+ * ============================================================
+ */
+
 const AGGREGATION_RPS = 1;
-const AGGREGATION_EXPECTED_REQUESTS = Number(
-  __ENV.AGGREGATION_EXPECTED_REQUESTS ?? "60",
-);
 
-const VISIBILITY_LIMIT_MS = Number(
-  __ENV.VISIBILITY_LIMIT_MS ?? "20000",
-);
+const AGGREGATION_EXPECTED_REQUESTS =
+  Number(
+    __ENV
+      .AGGREGATION_EXPECTED_REQUESTS ??
+      "120",
+  );
 
-const VISIBILITY_POLL_SECONDS = Number(
-  __ENV.VISIBILITY_POLL_SECONDS ?? "1",
-);
+/*
+ * ============================================================
+ * VISIBILITY SETTINGS
+ * ============================================================
+ */
+
+const VISIBILITY_LIMIT_MS =
+  Number(
+    __ENV.VISIBILITY_LIMIT_MS ??
+      "20000",
+  );
+
+const VISIBILITY_POLL_SECONDS =
+  Number(
+    __ENV
+      .VISIBILITY_POLL_SECONDS ??
+      "1",
+  );
 
 /*
  * ============================================================
@@ -91,55 +129,69 @@ const VISIBILITY_POLL_SECONDS = Number(
  * ============================================================
  */
 
-const ingestedLogs = new Counter("ingested_logs");
+const ingestedLogs =
+  new Counter(
+    "ingested_logs",
+  );
 
-const failedIngestionRequests = new Rate(
-  "failed_ingestion_requests",
-);
+const failedIngestionRequests =
+  new Rate(
+    "failed_ingestion_requests",
+  );
 
-const ingestionDuration = new Trend(
-  "ingestion_duration",
-  true,
-);
+const ingestionDuration =
+  new Trend(
+    "ingestion_duration",
+    true,
+  );
 
-const failedQueryRequests = new Rate(
-  "failed_query_requests",
-);
+const failedQueryRequests =
+  new Rate(
+    "failed_query_requests",
+  );
 
-const queryDuration = new Trend(
-  "query_duration",
-  true,
-);
+const queryDuration =
+  new Trend(
+    "query_duration",
+    true,
+  );
 
-const failedAggregationRequests = new Rate(
-  "failed_aggregation_requests",
-);
+const failedAggregationRequests =
+  new Rate(
+    "failed_aggregation_requests",
+  );
 
-const aggregationDuration = new Trend(
-  "aggregation_duration",
-  true,
-);
+const aggregationDuration =
+  new Trend(
+    "aggregation_duration",
+    true,
+  );
 
-const aggregationRequests = new Counter(
-  "aggregation_requests",
-);
+const aggregationRequests =
+  new Counter(
+    "aggregation_requests",
+  );
 
-const visibilitySuccess = new Rate(
-  "visibility_success",
-);
+const visibilitySuccess =
+  new Rate(
+    "visibility_success",
+  );
 
-const visibilityDuration = new Trend(
-  "visibility_duration",
-  true,
-);
+const visibilityDuration =
+  new Trend(
+    "visibility_duration",
+    true,
+  );
 
-const visibilityProbes = new Counter(
-  "visibility_probes",
-);
+const visibilityProbes =
+  new Counter(
+    "visibility_probes",
+  );
 
-const failedHealthChecks = new Rate(
-  "failed_health_checks",
-);
+const failedHealthChecks =
+  new Rate(
+    "failed_health_checks",
+  );
 
 /*
  * ============================================================
@@ -169,7 +221,9 @@ type VisibilityProbe = {
 
 type BatchResult = {
   logs: object[];
-  visibilityProbe: VisibilityProbe | undefined;
+  visibilityProbe:
+    | VisibilityProbe
+    | undefined;
 };
 
 /*
@@ -180,7 +234,10 @@ type BatchResult = {
 
 function isRecord(
   value: unknown,
-): value is Record<string, unknown> {
+): value is Record<
+  string,
+  unknown
+> {
   return (
     typeof value === "object" &&
     value !== null &&
@@ -196,8 +253,10 @@ function isRejectedLog(
   }
 
   return (
-    typeof value.index === "number" &&
-    typeof value.reason === "string"
+    typeof value.index ===
+      "number" &&
+    typeof value.reason ===
+      "string"
   );
 }
 
@@ -209,13 +268,18 @@ function isIngestResponse(
   }
 
   if (
-    typeof value.accepted !== "number" ||
-    !Array.isArray(value.rejected)
+    typeof value.accepted !==
+      "number" ||
+    !Array.isArray(
+      value.rejected,
+    )
   ) {
     return false;
   }
 
-  return value.rejected.every(isRejectedLog);
+  return value.rejected.every(
+    isRejectedLog,
+  );
 }
 
 function isQueryResponse(
@@ -225,13 +289,16 @@ function isQueryResponse(
     return false;
   }
 
-  if (!Array.isArray(value.logs)) {
+  if (
+    !Array.isArray(value.logs)
+  ) {
     return false;
   }
 
   return (
     value.next_cursor === null ||
-    typeof value.next_cursor === "string"
+    typeof value.next_cursor ===
+      "string"
   );
 }
 
@@ -244,103 +311,213 @@ function isQueryResponse(
 export const options = {
   scenarios: {
     /*
-     * 30 POST/sec * 500 logs = 15,000 logs/sec.
-     * 67 sec ~= 1,005,000 logs.
+     * Official-like load:
+     *
+     * 150 POST/sec
+     * *
+     * 100 logs/POST
+     * =
+     * 15,000 logs/sec
+     *
+     * for 120 seconds.
      */
     ingestion: {
-      executor: "constant-arrival-rate",
-      exec: "ingestLogs",
-      rate: INGESTION_RPS,
-      timeUnit: "1s",
-      duration: INGESTION_DURATION,
-      preAllocatedVUs: 100,
-      maxVUs: 400,
-      gracefulStop: "30s",
+      executor:
+        "constant-arrival-rate",
+
+      exec:
+        "ingestLogs",
+
+      rate:
+        INGESTION_RPS,
+
+      timeUnit:
+        "1s",
+
+      duration:
+        INGESTION_DURATION,
+
+      /*
+       * We intentionally allow many
+       * VUs here.
+       *
+       * If the service becomes slow,
+       * k6 must continue attempting
+       * the requested arrival rate
+       * instead of becoming the
+       * bottleneck itself.
+       */
+
+      preAllocatedVUs: 300,
+
+      maxVUs: 2000,
+
+      gracefulStop:
+        "30s",
     },
 
     /*
-     * Normal GET requests overlap with ingestion.
+     * Normal GET queries during
+     * the entire ingestion period.
      */
     normal_queries: {
-      executor: "constant-arrival-rate",
-      exec: "queryLogs",
-      startTime: QUERY_START_TIME,
-      rate: QUERY_RPS,
-      timeUnit: "1s",
-      duration: QUERY_DURATION,
-      preAllocatedVUs: 10,
-      maxVUs: 50,
-      gracefulStop: "10s",
+      executor:
+        "constant-arrival-rate",
+
+      exec:
+        "queryLogs",
+
+      startTime:
+        QUERY_START_TIME,
+
+      rate:
+        QUERY_RPS,
+
+      timeUnit:
+        "1s",
+
+      duration:
+        QUERY_DURATION,
+
+      preAllocatedVUs: 20,
+
+      maxVUs: 100,
+
+      gracefulStop:
+        "15s",
     },
 
     /*
-     * Exactly 1 aggregation request/sec during ingestion.
+     * Exactly one aggregation
+     * request/sec.
      */
     aggregation: {
-      executor: "constant-arrival-rate",
-      exec: "aggregateLogs",
-      startTime: QUERY_START_TIME,
-      rate: AGGREGATION_RPS,
-      timeUnit: "1s",
-      duration: QUERY_DURATION,
-      preAllocatedVUs: 5,
-      maxVUs: 20,
-      gracefulStop: "10s",
+      executor:
+        "constant-arrival-rate",
+
+      exec:
+        "aggregateLogs",
+
+      startTime:
+        QUERY_START_TIME,
+
+      rate:
+        AGGREGATION_RPS,
+
+      timeUnit:
+        "1s",
+
+      duration:
+        QUERY_DURATION,
+
+      preAllocatedVUs: 10,
+
+      maxVUs: 50,
+
+      gracefulStop:
+        "15s",
     },
 
     /*
-     * Availability probe while the service is under load.
-     * One /health request every 5 seconds.
+     * Health check every
+     * five seconds.
      */
     health_watch: {
-      executor: "constant-arrival-rate",
-      exec: "watchHealth",
+      executor:
+        "constant-arrival-rate",
+
+      exec:
+        "watchHealth",
+
       rate: 1,
-      timeUnit: "5s",
-      duration: INGESTION_DURATION,
+
+      timeUnit:
+        "5s",
+
+      duration:
+        INGESTION_DURATION,
+
       preAllocatedVUs: 2,
-      maxVUs: 5,
-      gracefulStop: "5s",
+
+      maxVUs: 10,
+
+      gracefulStop:
+        "5s",
     },
   },
 
   thresholds: {
-    failed_ingestion_requests: ["rate==0"],
-    failed_query_requests: ["rate==0"],
-    failed_aggregation_requests: ["rate==0"],
-    failed_health_checks: ["rate==0"],
+    failed_ingestion_requests: [
+      "rate==0",
+    ],
 
-    /* No load-generator drops at the requested arrival rates. */
-    dropped_iterations: ["count==0"],
+    failed_query_requests: [
+      "rate==0",
+    ],
 
-    /* No HTTP-level failures/timeouts. */
-    http_req_failed: ["rate==0"],
+    failed_aggregation_requests: [
+      "rate==0",
+    ],
 
-    /* Approximately 1M successfully accepted logs. */
+    failed_health_checks: [
+      "rate==0",
+    ],
+
+    /*
+     * The load generator itself
+     * must not drop scheduled work.
+     */
+    dropped_iterations: [
+      "count==0",
+    ],
+
+    /*
+     * No HTTP failures.
+     */
+    http_req_failed: [
+      "rate==0",
+    ],
+
+    /*
+     * 15k * 120 sec.
+     */
     ingested_logs: [
       `count>=${TARGET_TOTAL_LOGS}`,
     ],
 
-    /* Normal query performance while ingestion is active. */
+    /*
+     * Normal GET performance.
+     */
     query_duration: [
       `p(95)<${QUERY_P95_TARGET_MS}`,
     ],
 
-    /* Required aggregation p95. */
-    aggregation_duration: ["p(95)<1000"],
+    /*
+     * Required by project spec.
+     */
+    aggregation_duration: [
+      "p(95)<1000",
+    ],
 
-    /* 1 aggregation/sec * 60 seconds. */
+    /*
+     * 1/sec for 120 sec.
+     */
     aggregation_requests: [
       `count>=${AGGREGATION_EXPECTED_REQUESTS}`,
     ],
 
-    /* Sample roughly one visibility probe/sec. */
-    visibility_probes: ["count>=60"],
+    /*
+     * Roughly one visibility probe
+     * per second.
+     */
+    visibility_probes: [
+      "count>=100",
+    ],
 
-    /* Every sampled new log must become visible. */
-    visibility_success: ["rate==1"],
+    visibility_success: [
+      "rate==1",
+    ],
 
-    /* Required new-log visibility bound. */
     visibility_duration: [
       `max<${VISIBILITY_LIMIT_MS}`,
     ],
@@ -358,16 +535,22 @@ export function setup(): void {
     `${BASE_URL}/health`,
     {
       timeout: "5s",
+
       tags: {
-        endpoint: "setup_health",
+        endpoint:
+          "setup_health",
       },
     },
   );
 
-  const healthy = check(response, {
-    "service is healthy before load":
-      (res) => res.status === 200,
-  });
+  const healthy = check(
+    response,
+    {
+      "service is healthy before load":
+        (res) =>
+          res.status === 200,
+    },
+  );
 
   if (!healthy) {
     throw new Error(
@@ -381,20 +564,28 @@ export function setup(): void {
  * CREATE BATCH
  * ============================================================
  *
- * Every batch spreads its timestamps over ~28 days, so an empty DB
- * populated by this test represents approximately one month of data.
+ * Each batch spreads timestamps
+ * over approximately 28 days.
  */
 
 function createBatch(): BatchResult {
   const iteration =
-    exec.scenario.iterationInTest;
+    exec.scenario
+      .iterationInTest;
 
   /*
-   * Default ingestion is 30 iterations/sec, so one probe every
-   * 30 ingestion iterations gives roughly one visibility probe/sec.
+   * At 150 POST/sec:
+   *
+   * iteration % 150 === 0
+   *
+   * gives approximately
+   * one probe per second.
    */
+
   const shouldProbeVisibility =
-    iteration % INGESTION_RPS === 0;
+    iteration %
+      INGESTION_RPS ===
+    0;
 
   let visibilityProbe:
     | VisibilityProbe
@@ -402,7 +593,8 @@ function createBatch(): BatchResult {
 
   const logs: object[] = [];
 
-  const batchCreatedAt = Date.now();
+  const batchCreatedAt =
+    Date.now();
 
   for (
     let index = 0;
@@ -410,28 +602,42 @@ function createBatch(): BatchResult {
     index++
   ) {
     /*
-     * Spread this batch across the full 28-day window.
+     * Spread logs through
+     * a 28-day time range.
      */
-    const monthOffset = Math.floor(
-      (index / BATCH_SIZE) * MONTH_MS,
-    );
 
-    let timestamp = new Date(
-      batchCreatedAt - monthOffset,
-    ).toISOString();
+    const monthOffset =
+      Math.floor(
+        (index /
+          BATCH_SIZE) *
+          MONTH_MS,
+      );
+
+    let timestamp =
+      new Date(
+        batchCreatedAt -
+          monthOffset,
+      ).toISOString();
 
     let service =
-      `perf-service-${index % 10}`;
+      `perf-service-${
+        index % 10
+      }`;
 
     /*
-     * One unique, current timestamp log is used for the visibility
-     * requirement. Exact service match makes it cheap to query.
+     * Unique recent log
+     * used for read-after-write
+     * visibility testing.
      */
+
     if (
       shouldProbeVisibility &&
       index === 0
     ) {
-      timestamp = new Date().toISOString();
+      timestamp =
+        new Date()
+          .toISOString();
+
       service =
         `visibility-probe-${iteration}`;
 
@@ -443,23 +649,33 @@ function createBatch(): BatchResult {
 
     logs.push({
       timestamp,
+
       level: [
         "debug",
         "info",
         "warn",
         "error",
       ][index % 4],
+
       service,
+
       message:
         `Performance log ${iteration}-${index}`,
+
       attributes: {
         source: "k6",
+
         region:
-          `region-${index % 4}`,
+          `region-${
+            index % 4
+          }`,
+
         request_id:
           `perf-${iteration}-${index}`,
+
         attempt:
           index % 5,
+
         successful:
           index % 2 === 0,
       },
@@ -485,21 +701,31 @@ export function ingestLogs(): void {
   } = createBatch();
 
   /*
-   * Visibility is measured from BEFORE the POST begins.
+   * Visibility timer starts
+   * before the POST begins.
    */
-  const visibilityStartedAt = Date.now();
+
+  const visibilityStartedAt =
+    Date.now();
 
   const response = http.post(
     `${BASE_URL}/logs`,
-    JSON.stringify({ logs }),
+
+    JSON.stringify({
+      logs,
+    }),
+
     {
       headers: {
         "Content-Type":
           "application/json",
       },
+
       timeout: "30s",
+
       tags: {
-        endpoint: "ingestion",
+        endpoint:
+          "ingestion",
       },
     },
   );
@@ -516,7 +742,9 @@ export function ingestLogs(): void {
     const parsed: unknown =
       response.json();
 
-    if (isIngestResponse(parsed)) {
+    if (
+      isIngestResponse(parsed)
+    ) {
       body = parsed;
     }
   } catch {
@@ -526,32 +754,54 @@ export function ingestLogs(): void {
   const succeeded =
     response.status === 200 &&
     body !== undefined &&
-    body.accepted === BATCH_SIZE &&
+    body.accepted ===
+      BATCH_SIZE &&
     body.rejected.length === 0;
 
-  check(response, {
-    "entire ingestion batch accepted":
-      () => succeeded,
-  });
+  check(
+    response,
+    {
+      "entire ingestion batch accepted":
+        () => succeeded,
+    },
+  );
 
   if (!succeeded) {
-    failedIngestionRequests.add(true);
+    failedIngestionRequests.add(
+      true,
+    );
 
-    if (visibilityProbe !== undefined) {
+    if (
+      visibilityProbe !==
+      undefined
+    ) {
       visibilityProbes.add(1);
-      visibilitySuccess.add(false);
+
+      visibilitySuccess.add(
+        false,
+      );
+
       visibilityDuration.add(
-        Date.now() - visibilityStartedAt,
+        Date.now() -
+          visibilityStartedAt,
       );
     }
 
     return;
   }
 
-  failedIngestionRequests.add(false);
-  ingestedLogs.add(BATCH_SIZE);
+  failedIngestionRequests.add(
+    false,
+  );
 
-  if (visibilityProbe !== undefined) {
+  ingestedLogs.add(
+    BATCH_SIZE,
+  );
+
+  if (
+    visibilityProbe !==
+    undefined
+  ) {
     visibilityProbes.add(1);
 
     checkVisibility(
@@ -565,8 +815,6 @@ export function ingestLogs(): void {
  * ============================================================
  * VISIBILITY CHECK
  * ============================================================
- *
- * Poll until the unique log becomes queryable or 20 seconds elapse.
  */
 
 function checkVisibility(
@@ -574,24 +822,33 @@ function checkVisibility(
   startedAt: number,
 ): void {
   while (
-    Date.now() - startedAt <
+    Date.now() -
+      startedAt <
     VISIBILITY_LIMIT_MS
   ) {
     const url =
       `${BASE_URL}/logs` +
-      `?service=${encodeURIComponent(probe.service)}` +
-      `&since=${encodeURIComponent(probe.timestamp)}` +
+      `?service=${encodeURIComponent(
+        probe.service,
+      )}` +
+      `&since=${encodeURIComponent(
+        probe.timestamp,
+      )}` +
       `&limit=1`;
 
-    const response = http.get(
-      url,
-      {
-        timeout: "5s",
-        tags: {
-          endpoint: "visibility",
+    const response =
+      http.get(
+        url,
+        {
+          timeout:
+            "5s",
+
+          tags: {
+            endpoint:
+              "visibility",
+          },
         },
-      },
-    );
+      );
 
     let body:
       | QueryResponse
@@ -601,7 +858,9 @@ function checkVisibility(
       const parsed: unknown =
         response.json();
 
-      if (isQueryResponse(parsed)) {
+      if (
+        isQueryResponse(parsed)
+      ) {
         body = parsed;
       }
     } catch {
@@ -609,7 +868,8 @@ function checkVisibility(
     }
 
     const elapsed =
-      Date.now() - startedAt;
+      Date.now() -
+      startedAt;
 
     const visible =
       response.status === 200 &&
@@ -618,28 +878,43 @@ function checkVisibility(
 
     if (visible) {
       visibilitySuccess.add(
-        elapsed < VISIBILITY_LIMIT_MS,
+        elapsed <
+          VISIBILITY_LIMIT_MS,
       );
-      visibilityDuration.add(elapsed);
 
-      check(response, {
-        "new log visible within 20 seconds":
-          () =>
-            elapsed <
-            VISIBILITY_LIMIT_MS,
-      });
+      visibilityDuration.add(
+        elapsed,
+      );
+
+      check(
+        response,
+        {
+          "new log visible within 20 seconds":
+            () =>
+              elapsed <
+              VISIBILITY_LIMIT_MS,
+        },
+      );
 
       return;
     }
 
-    sleep(VISIBILITY_POLL_SECONDS);
+    sleep(
+      VISIBILITY_POLL_SECONDS,
+    );
   }
 
   const elapsed =
-    Date.now() - startedAt;
+    Date.now() -
+    startedAt;
 
-  visibilitySuccess.add(false);
-  visibilityDuration.add(elapsed);
+  visibilitySuccess.add(
+    false,
+  );
+
+  visibilityDuration.add(
+    elapsed,
+  );
 }
 
 /*
@@ -649,25 +924,33 @@ function checkVisibility(
  */
 
 export function queryLogs(): void {
-  const since = new Date(
-    Date.now() - DAY_MS,
-  ).toISOString();
+  const since =
+    new Date(
+      Date.now() -
+        DAY_MS,
+    ).toISOString();
 
   const url =
     `${BASE_URL}/logs` +
     `?service=perf-service-0` +
-    `&since=${encodeURIComponent(since)}` +
+    `&since=${encodeURIComponent(
+      since,
+    )}` +
     `&limit=${QUERY_LIMIT}`;
 
-  const response = http.get(
-    url,
-    {
-      timeout: "10s",
-      tags: {
-        endpoint: "query",
+  const response =
+    http.get(
+      url,
+      {
+        timeout:
+          "10s",
+
+        tags: {
+          endpoint:
+            "query",
+        },
       },
-    },
-  );
+    );
 
   queryDuration.add(
     response.timings.duration,
@@ -681,7 +964,9 @@ export function queryLogs(): void {
     const parsed: unknown =
       response.json();
 
-    if (isQueryResponse(parsed)) {
+    if (
+      isQueryResponse(parsed)
+    ) {
       body = parsed;
     }
   } catch {
@@ -692,10 +977,13 @@ export function queryLogs(): void {
     response.status === 200 &&
     body !== undefined;
 
-  check(response, {
-    "query succeeds during ingestion":
-      () => succeeded,
-  });
+  check(
+    response,
+    {
+      "query succeeds during ingestion":
+        () => succeeded,
+    },
+  );
 
   failedQueryRequests.add(
     !succeeded,
@@ -704,39 +992,50 @@ export function queryLogs(): void {
 
 /*
  * ============================================================
- * GET /logs/aggregate WHILE INGESTION IS ACTIVE
+ * GET /logs/aggregate
  * ============================================================
  */
 
 export function aggregateLogs(): void {
   aggregationRequests.add(1);
 
-  const now = Date.now();
+  const now =
+    Date.now();
 
-  const since = new Date(
-    now - MONTH_MS,
-  ).toISOString();
+  const since =
+    new Date(
+      now - MONTH_MS,
+    ).toISOString();
 
-  const until = new Date(
-    now,
-  ).toISOString();
+  const until =
+    new Date(
+      now,
+    ).toISOString();
 
   const url =
     `${BASE_URL}/logs/aggregate` +
-    `?since=${encodeURIComponent(since)}` +
-    `&until=${encodeURIComponent(until)}` +
+    `?since=${encodeURIComponent(
+      since,
+    )}` +
+    `&until=${encodeURIComponent(
+      until,
+    )}` +
     `&bucket=1h` +
     `&group_by=service`;
 
-  const response = http.get(
-    url,
-    {
-      timeout: "10s",
-      tags: {
-        endpoint: "aggregation",
+  const response =
+    http.get(
+      url,
+      {
+        timeout:
+          "10s",
+
+        tags: {
+          endpoint:
+            "aggregation",
+        },
       },
-    },
-  );
+    );
 
   aggregationDuration.add(
     response.timings.duration,
@@ -745,10 +1044,13 @@ export function aggregateLogs(): void {
   const succeeded =
     response.status === 200;
 
-  check(response, {
-    "aggregation succeeds during ingestion":
-      () => succeeded,
-  });
+  check(
+    response,
+    {
+      "aggregation succeeds during ingestion":
+        () => succeeded,
+    },
+  );
 
   failedAggregationRequests.add(
     !succeeded,
@@ -762,15 +1064,19 @@ export function aggregateLogs(): void {
  */
 
 export function watchHealth(): void {
-  const response = http.get(
-    `${BASE_URL}/health`,
-    {
-      timeout: "5s",
-      tags: {
-        endpoint: "health_watch",
+  const response =
+    http.get(
+      `${BASE_URL}/health`,
+      {
+        timeout:
+          "5s",
+
+        tags: {
+          endpoint:
+            "health_watch",
+        },
       },
-    },
-  );
+    );
 
   const succeeded =
     response.status === 200;
@@ -779,10 +1085,13 @@ export function watchHealth(): void {
     !succeeded,
   );
 
-  check(response, {
-    "service remains healthy under load":
-      () => succeeded,
-  });
+  check(
+    response,
+    {
+      "service remains healthy under load":
+        () => succeeded,
+    },
+  );
 }
 
 /*
@@ -792,11 +1101,17 @@ export function watchHealth(): void {
  */
 
 type SummaryMetric = {
-  values?: Record<string, number>;
+  values?: Record<
+    string,
+    number
+  >;
 };
 
 type SummaryData = {
-  metrics: Record<string, SummaryMetric>;
+  metrics: Record<
+    string,
+    SummaryMetric
+  >;
 };
 
 function metricValue(
@@ -805,8 +1120,11 @@ function metricValue(
   valueName: string,
 ): number {
   return (
-    data.metrics[metricName]
-      ?.values?.[valueName] ??
+    data.metrics[
+      metricName
+    ]?.values?.[
+      valueName
+    ] ??
     Number.NaN
   );
 }
@@ -814,141 +1132,199 @@ function metricValue(
 function passFail(
   passed: boolean,
 ): string {
-  return passed ? "PASS" : "FAIL";
+  return passed
+    ? "PASS"
+    : "FAIL";
 }
 
 function formatNumber(
   value: number,
   decimals = 2,
 ): string {
-  if (!Number.isFinite(value)) {
+  if (
+    !Number.isFinite(value)
+  ) {
     return "n/a";
   }
 
-  return value.toFixed(decimals);
+  return value.toFixed(
+    decimals,
+  );
 }
 
 export function handleSummary(
   data: SummaryData,
-): Record<string, string> {
-  const ingested = metricValue(
-    data,
-    "ingested_logs",
-    "count",
-  );
+): Record<
+  string,
+  string
+> {
+  const ingested =
+    metricValue(
+      data,
+      "ingested_logs",
+      "count",
+    );
 
-  const ingestionFailureRate = metricValue(
-    data,
-    "failed_ingestion_requests",
-    "rate",
-  );
+  const ingestionFailureRate =
+    metricValue(
+      data,
+      "failed_ingestion_requests",
+      "rate",
+    );
 
-  const dropped = metricValue(
-    data,
-    "dropped_iterations",
-    "count",
-  );
+  const ingestionP95 =
+    metricValue(
+      data,
+      "ingestion_duration",
+      "p(95)",
+    );
 
-  const httpFailureRate = metricValue(
-    data,
-    "http_req_failed",
-    "rate",
-  );
+  const dropped =
+    metricValue(
+      data,
+      "dropped_iterations",
+      "count",
+    );
 
-  const queryFailureRate = metricValue(
-    data,
-    "failed_query_requests",
-    "rate",
-  );
+  const httpFailureRate =
+    metricValue(
+      data,
+      "http_req_failed",
+      "rate",
+    );
 
-  const queryP95 = metricValue(
-    data,
-    "query_duration",
-    "p(95)",
-  );
+  const queryFailureRate =
+    metricValue(
+      data,
+      "failed_query_requests",
+      "rate",
+    );
 
-  const aggregationFailureRate = metricValue(
-    data,
-    "failed_aggregation_requests",
-    "rate",
-  );
+  const queryP95 =
+    metricValue(
+      data,
+      "query_duration",
+      "p(95)",
+    );
 
-  const aggregationP95 = metricValue(
-    data,
-    "aggregation_duration",
-    "p(95)",
-  );
+  const aggregationFailureRate =
+    metricValue(
+      data,
+      "failed_aggregation_requests",
+      "rate",
+    );
 
-  const aggregationCount = metricValue(
-    data,
-    "aggregation_requests",
-    "count",
-  );
+  const aggregationP95 =
+    metricValue(
+      data,
+      "aggregation_duration",
+      "p(95)",
+    );
 
-  const visibilityRate = metricValue(
-    data,
-    "visibility_success",
-    "rate",
-  );
+  const aggregationCount =
+    metricValue(
+      data,
+      "aggregation_requests",
+      "count",
+    );
 
-  const visibilityMax = metricValue(
-    data,
-    "visibility_duration",
-    "max",
-  );
+  const visibilityRate =
+    metricValue(
+      data,
+      "visibility_success",
+      "rate",
+    );
 
-  const visibilityProbeCount = metricValue(
-    data,
-    "visibility_probes",
-    "count",
-  );
+  const visibilityMax =
+    metricValue(
+      data,
+      "visibility_duration",
+      "max",
+    );
 
-  const healthFailureRate = metricValue(
-    data,
-    "failed_health_checks",
-    "rate",
-  );
+  const visibilityProbeCount =
+    metricValue(
+      data,
+      "visibility_probes",
+      "count",
+    );
+
+  const healthFailureRate =
+    metricValue(
+      data,
+      "failed_health_checks",
+      "rate",
+    );
 
   const ingestionPassed =
-    ingested >= TARGET_TOTAL_LOGS &&
-    ingestionFailureRate === 0 &&
+    ingested >=
+      TARGET_TOTAL_LOGS &&
+    ingestionFailureRate ===
+      0 &&
     dropped === 0;
 
   const stabilityPassed =
     dropped === 0 &&
-    ingestionFailureRate === 0 &&
-    httpFailureRate === 0 &&
-    healthFailureRate === 0;
+    ingestionFailureRate ===
+      0 &&
+    httpFailureRate ===
+      0 &&
+    healthFailureRate ===
+      0;
 
   const queryPassed =
     queryFailureRate === 0 &&
-    queryP95 < QUERY_P95_TARGET_MS;
+    queryP95 <
+      QUERY_P95_TARGET_MS;
 
   const aggregationPassed =
-    aggregationFailureRate === 0 &&
+    aggregationFailureRate ===
+      0 &&
     aggregationP95 < 1000;
 
-  const millionRowsPassed =
-    ingested >= TARGET_TOTAL_LOGS;
+  const totalLogsPassed =
+    ingested >=
+    TARGET_TOTAL_LOGS;
 
   const visibilityPassed =
-    visibilityProbeCount >= 60 &&
+    visibilityProbeCount >=
+      100 &&
     visibilityRate === 1 &&
-    visibilityMax < VISIBILITY_LIMIT_MS;
+    visibilityMax <
+      VISIBILITY_LIMIT_MS;
 
   const aggregationRatePassed =
     aggregationCount >=
       AGGREGATION_EXPECTED_REQUESTS &&
-    aggregationFailureRate === 0;
+    aggregationFailureRate ===
+      0;
+
+  /*
+   * Actual accepted-log rate,
+   * using the configured
+   * 120-second load duration.
+   */
+
+  const actualLogsPerSecond =
+    ingested / 120;
 
   const report = [
     "",
     "============================================================",
-    " LOGFORGE PERFORMANCE TARGET REPORT",
+    " LOGFORGE OFFICIAL-LIKE LOAD REPORT",
     "============================================================",
+    "",
+    "Configuration:",
+    `       target logs/sec: ${TARGET_LOGS_PER_SECOND}`,
+    `       batch size: ${BATCH_SIZE}`,
+    `       POST requests/sec: ${INGESTION_RPS}`,
+    `       duration: ${INGESTION_DURATION}`,
+    `       target total logs: ${TARGET_TOTAL_LOGS}`,
     "",
     `[${passFail(ingestionPassed)}] Sustain >= ${TARGET_LOGS_PER_SECOND.toLocaleString()} logs/sec`,
     `       accepted logs: ${formatNumber(ingested, 0)}`,
+    `       achieved logs/sec: ${formatNumber(actualLogsPerSecond)}`,
+    `       ingestion p95: ${formatNumber(ingestionP95)} ms`,
     `       failed ingestion rate: ${formatNumber(ingestionFailureRate * 100)}%`,
     `       dropped iterations: ${formatNumber(dropped, 0)}`,
     "",
@@ -962,12 +1338,10 @@ export function handleSummary(
     `[${passFail(queryPassed)}] Maintain GET performance during ingestion`,
     `       GET p95: ${formatNumber(queryP95)} ms`,
     `       GET failure rate: ${formatNumber(queryFailureRate * 100)}%`,
-    `       test threshold: ${QUERY_P95_TARGET_MS} ms (chosen benchmark; spec does not give an exact GET p95)`,
     "",
-    `[${passFail(millionRowsPassed)}] Handle approximately 1,000,000 newly ingested logs`,
+    `[${passFail(totalLogsPassed)}] Handle official-like load volume`,
     `       accepted logs: ${formatNumber(ingested, 0)}`,
-    "",
-    `[CONFIGURED] Test timestamps span approximately 28 days`,
+    `       expected: >= ${TARGET_TOTAL_LOGS}`,
     "",
     `[${passFail(visibilityPassed)}] New logs queryable within 20 seconds`,
     `       visibility probes: ${formatNumber(visibilityProbeCount, 0)}`,
@@ -978,16 +1352,22 @@ export function handleSummary(
     `       aggregation requests: ${formatNumber(aggregationCount, 0)}`,
     `       expected: >= ${AGGREGATION_EXPECTED_REQUESTS}`,
     "",
-    "NOTE: Docker CPU/RAM limits and container restart/OOM status",
-    "      cannot be proven by k6 alone; verify them with Docker.",
+    "NOTE:",
+    "Run `docker stats` in another terminal while this test is running.",
     "",
     "============================================================",
     "",
   ].join("\n");
 
   return {
-    stdout: report,
+    stdout:
+      report,
+
     "performance-summary.json":
-      JSON.stringify(data, null, 2),
+      JSON.stringify(
+        data,
+        null,
+        2,
+      ),
   };
 }

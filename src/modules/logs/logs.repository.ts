@@ -17,20 +17,6 @@ import {
 
 export type StoredLog = typeof logs.$inferSelect;
 
-// export async function insertLog(log: Log) : Promise<void> {
-//     try{
-//         await db.insert(logs).values(log).execute();
-//     }
-//     catch(error : unknown){
-//         throw new LogsError(
-//             "LOGS_DATABASE_ERROR",
-//             500,
-//             "Could not insert log",
-//         );
-//     }
-// }
-
-
 function escapeLike(value: string): string {
   return value
     .replaceAll("\\", "\\\\")
@@ -43,66 +29,114 @@ function jsonbTextAttribute(key: string): SQL<string> {
 export async function queryLogs(
   filters: ParsedLogsFilters,
 ): Promise<StoredLog[]> {
-    const conditions: SQL[] = [];
-    if (filters.service !== undefined) {
-        conditions.push(
-            eq(logs.service, filters.service),
-        );
-    }
-    if (filters.level !== undefined) {
-        conditions.push(
-            eq(logs.level, filters.level),
-        );
-    }
-    if (filters.since !== undefined) {
-        conditions.push(
-            gte(logs.timestamp, filters.since),
-        );
+  let attributeConditions = pg``;
+
+  for (const key in filters.attributes) {
+    const value = filters.attributes[key]!;
+
+    attributeConditions = pg`
+      ${attributeConditions}
+      AND attributes ->> ${key} = ${value}
+    `;
+  }
+
+  const since =
+    filters.since?.toISOString();
+
+  const until =
+    filters.until?.toISOString();
+
+  const cursorTimestamp =
+    filters.cursor?.timestamp.toISOString();
+
+  const rows = await pg`
+    SELECT
+      id,
+      timestamp,
+      level,
+      service,
+      message,
+      attributes
+    FROM logs
+    WHERE TRUE
+
+    ${
+      filters.service !== undefined
+        ? pg`
+            AND service = ${filters.service}
+          `
+        : pg``
     }
 
-    if (filters.until !== undefined) {
-        conditions.push(
-            lt(logs.timestamp, filters.until),
-        );
+    ${
+      filters.level !== undefined
+        ? pg`
+            AND level = ${filters.level}::log_level
+          `
+        : pg``
     }
-    if (filters.q !== undefined) {
-        const escapedQuery = escapeLike(filters.q);
 
-        conditions.push(
-            ilike(logs.message, `%${escapedQuery}%`),
-        );
+    ${
+      since !== undefined
+        ? pg`
+            AND timestamp >= ${since}::timestamptz
+          `
+        : pg``
     }
-    if (filters.cursor !== undefined) {
-        conditions.push(
-            or(
-                lt(logs.timestamp, filters.cursor.timestamp),
-                and(
-                    eq(logs.timestamp, filters.cursor.timestamp),
-                    lt(logs.id, filters.cursor.id),
-                ),
-            )!,
-        );
+
+    ${
+      until !== undefined
+        ? pg`
+            AND timestamp < ${until}::timestamptz
+          `
+        : pg``
     }
-    if(filters.attributes !== undefined){
-        for (const [key, value] of Object.entries(filters.attributes)) {
-            conditions.push(
-                eq(jsonbTextAttribute(key), value),
-            );
-        }
+
+    ${
+      filters.q !== undefined &&
+      filters.q.length > 0
+        ? pg`
+            AND message ILIKE ${
+              `%${escapeLike(filters.q)}%`
+            }
+          `
+        : pg``
     }
-    return db
-    .select()
-    .from(logs)
-    .where(
-        conditions.length > 0
-        ? and(...conditions)
-        : undefined,
-    )
-    .orderBy(
-        desc(logs.timestamp),
-        desc(logs.id),
-    )
-    .limit(filters.limit + 1);
+
+    ${
+      filters.cursor !== undefined &&
+      cursorTimestamp !== undefined
+        ? pg`
+            AND (
+              timestamp < ${cursorTimestamp}::timestamptz
+              OR (
+                timestamp = ${cursorTimestamp}::timestamptz
+                AND id < ${filters.cursor.id}
+              )
+            )
+          `
+        : pg``
+    }
+
+    ${attributeConditions}
+
+    ORDER BY
+      timestamp DESC,
+      id DESC
+
+    LIMIT ${filters.limit + 1}
+  `;
+
+  return rows.map((row) => ({
+    id: Number(row.id),
+    timestamp: new Date(
+      row.timestamp as string,
+    ),
+    level: row.level,
+    service: row.service,
+    message: row.message,
+    attributes: row.attributes,
+  })) as StoredLog[];
 }
 
 export type AggregateRow = {
@@ -130,31 +164,46 @@ function getBucketInterval(
 export async function aggregateLogs(
   filters: ParsedAggregateFilters,
 ): Promise<AggregateRow[]> {
-  const conditions: SQL[] = [];
+  const conditions: SQL[] = [
+    // since inclusive
+    gte(
+      logs.timestamp,
+      filters.since,
+    ),
 
-  // since is inclusive
-  conditions.push(
-    gte(logs.timestamp, filters.since),
-  );
-
-  // until is exclusive
-  conditions.push(
-    lt(logs.timestamp, filters.until),
-  );
+    // until exclusive
+    lt(
+      logs.timestamp,
+      filters.until,
+    ),
+  ];
 
   if (filters.service !== undefined) {
     conditions.push(
-      eq(logs.service, filters.service),
+      eq(
+        logs.service,
+        filters.service,
+      ),
     );
   }
 
   if (filters.level !== undefined) {
     conditions.push(
-      eq(logs.level, filters.level),
+      eq(
+        logs.level,
+        filters.level,
+      ),
     );
   }
 
-  if (filters.q !== undefined) {
+  /*
+   * Empty q matches everything anyway.
+   * Avoid evaluating ILIKE '%%' for every row.
+   */
+  if (
+    filters.q !== undefined &&
+    filters.q.length > 0
+  ) {
     conditions.push(
       ilike(
         logs.message,
@@ -163,18 +212,25 @@ export async function aggregateLogs(
     );
   }
 
-  for (const [key, value] of Object.entries(
-    filters.attributes,
-  )) {
+  /*
+   * Avoid Object.entries() allocation.
+   */
+  for (const key in filters.attributes) {
     conditions.push(
       eq(
         jsonbTextAttribute(key),
-        value,
+        filters.attributes[key]!,
       ),
     );
   }
 
-  const interval = getBucketInterval(filters.bucket);
+  const whereCondition =
+    and(...conditions);
+
+  const interval =
+    getBucketInterval(
+      filters.bucket,
+    );
 
   const bucketStart = sql<Date>`
     date_bin(
@@ -184,76 +240,62 @@ export async function aggregateLogs(
     )
   `;
 
-  if (filters.group_by === "service") {
-    return db
-      .select({
-        start: bucketStart,
-        group: logs.service,
-        count: sql<number>`count(*)::int`,
-      })
-      .from(logs)
-      .where(and(...conditions))
-      .groupBy(
-        bucketStart,
-        logs.service,
-      )
-      .orderBy(
-        asc(bucketStart),
-        asc(logs.service),
-      );
-  }
+  const count =
+    sql<number>`count(*)::int`;
 
-  if (filters.group_by === "level") {
-    return db
-      .select({
-        start: bucketStart,
-        group: logs.level,
-        count: sql<number>`count(*)::int`,
-      })
-      .from(logs)
-      .where(and(...conditions))
-      .groupBy(
-        bucketStart,
-        logs.level,
-      )
-      .orderBy(
-        asc(bucketStart),
-        asc(logs.level),
-      );
-  }
+  switch (filters.group_by) {
+    case "service":
+      return db
+        .select({
+          start: bucketStart,
+          group: logs.service,
+          count,
+        })
+        .from(logs)
+        .where(whereCondition)
+        .groupBy(
+          bucketStart,
+          logs.service,
+        )
+        .orderBy(
+          asc(bucketStart),
+          asc(logs.service),
+        );
 
-  return db
-    .select({
-      start: bucketStart,
-      group: sql<null>`NULL`,
-      count: sql<number>`count(*)::int`,
-    })
-    .from(logs)
-    .where(and(...conditions))
-    .groupBy(bucketStart)
-    .orderBy(asc(bucketStart));
+    case "level":
+      return db
+        .select({
+          start: bucketStart,
+          group: logs.level,
+          count,
+        })
+        .from(logs)
+        .where(whereCondition)
+        .groupBy(
+          bucketStart,
+          logs.level,
+        )
+        .orderBy(
+          asc(bucketStart),
+          asc(logs.level),
+        );
+
+    default:
+      return db
+        .select({
+          start: bucketStart,
+          group: sql<null>`NULL`,
+          count,
+        })
+        .from(logs)
+        .where(whereCondition)
+        .groupBy(bucketStart)
+        .orderBy(
+          asc(bucketStart),
+        );
+  }
 }
 
-// export async function insertLogsBatch(
-//   logsToInsert: Log[],
-// ): Promise<void> {
-//   if (logsToInsert.length === 0) {
-//     return;
-//   }
-
-//   await db
-//     .insert(logs)
-//     .values(logsToInsert);
-// }
-// export async function insertLogsBatch(
-//   logsToInsert: Log[],
-// ): Promise<void> {
-//   if (logsToInsert.length === 0) {
-//     return;
-//   }
-
-//   return;
-// }
 export async function insertLogsBatch(
   logsToInsert: Log[],
 ): Promise<void> {
@@ -261,30 +303,72 @@ export async function insertLogsBatch(
     return;
   }
 
-  const rows = logsToInsert.map((log) => ({
-    timestamp: log.timestamp.toISOString(),
+  const timestamps: string[] =
+    new Array(logsToInsert.length);
 
-    level: log.level,
+  const levels: string[] =
+    new Array(logsToInsert.length);
 
-    service: log.service,
+  const services: string[] =
+    new Array(logsToInsert.length);
 
-    message: log.message,
+  const messages: string[] =
+    new Array(logsToInsert.length);
 
-    attributes: JSON.stringify(
-      log.attributes ?? {},
-    ),
-  }));
+  const attributes: string[] =
+    new Array(logsToInsert.length);
+
+  for (
+    let index = 0;
+    index < logsToInsert.length;
+    index++
+  ) {
+    const log = logsToInsert[index]!;
+
+    timestamps[index] =
+      log.timestamp.toISOString();
+
+    levels[index] =
+      log.level;
+
+    services[index] =
+      log.service;
+
+    messages[index] =
+      log.message;
+
+    attributes[index] =
+      JSON.stringify(
+        log.attributes ?? {},
+      );
+  }
 
   await pg`
-    INSERT INTO logs ${
-      pg(
-        rows,
-        "timestamp",
-        "level",
-        "service",
-        "message",
-        "attributes",
-      )
-    }
+    INSERT INTO logs (
+      timestamp,
+      level,
+      service,
+      message,
+      attributes
+    )
+    SELECT
+      timestamp,
+      level,
+      service,
+      message,
+      attributes
+    FROM unnest(
+      ${pg.array(timestamps)}::timestamptz[],
+      ${pg.array(levels)}::log_level[],
+      ${pg.array(services)}::text[],
+      ${pg.array(messages)}::text[],
+      ${pg.array(attributes)}::jsonb[]
+    ) AS input(
+      timestamp,
+      level,
+      service,
+      message,
+      attributes
+    )
   `;
 }
