@@ -261,30 +261,72 @@ export async function insertLogsBatch(
     return;
   }
 
-  const rows = logsToInsert.map((log) => ({
-    timestamp: log.timestamp.toISOString(),
+  const timestamps: string[] =
+    new Array(logsToInsert.length);
 
-    level: log.level,
+  const levels: string[] =
+    new Array(logsToInsert.length);
 
-    service: log.service,
+  const services: string[] =
+    new Array(logsToInsert.length);
 
-    message: log.message,
+  const messages: string[] =
+    new Array(logsToInsert.length);
 
-    attributes: JSON.stringify(
-      log.attributes ?? {},
-    ),
-  }));
+  const attributes: string[] =
+    new Array(logsToInsert.length);
+
+  for (
+    let index = 0;
+    index < logsToInsert.length;
+    index++
+  ) {
+    const log = logsToInsert[index]!;
+
+    timestamps[index] =
+      log.timestamp.toISOString();
+
+    levels[index] =
+      log.level;
+
+    services[index] =
+      log.service;
+
+    messages[index] =
+      log.message;
+
+    attributes[index] =
+      JSON.stringify(
+        log.attributes ?? {},
+      );
+  }
 
   await pg`
-    INSERT INTO logs ${
-      pg(
-        rows,
-        "timestamp",
-        "level",
-        "service",
-        "message",
-        "attributes",
-      )
-    }
+    INSERT INTO logs (
+      timestamp,
+      level,
+      service,
+      message,
+      attributes
+    )
+    SELECT
+      timestamp,
+      level,
+      service,
+      message,
+      attributes
+    FROM unnest(
+      ${pg.array(timestamps)}::timestamptz[],
+      ${pg.array(levels)}::log_level[],
+      ${pg.array(services)}::text[],
+      ${pg.array(messages)}::text[],
+      ${pg.array(attributes)}::jsonb[]
+    ) AS input(
+      timestamp,
+      level,
+      service,
+      message,
+      attributes
+    )
   `;
 }
