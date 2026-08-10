@@ -1,0 +1,1 @@
+DROP INDEX "logs_level_idx";
