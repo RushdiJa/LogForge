@@ -1,6 +1,6 @@
 import type { Log } from "./logs.type.js";
 
-const MAX_QUEUED_LOGS = 150_000;
+const MAX_QUEUED_LOGS = 50_000;
 
 export type WriteQueueItem = {
   logs: Log[];

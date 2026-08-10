@@ -10,17 +10,17 @@ import {
 
 import type { Log } from "./logs.type.js";
 
-const FLUSH_INTERVAL_MS = 50;
+const FLUSH_INTERVAL_MS = 100;
 
 // Worker may process at most this many logs per cycle.
-const MAX_LOGS_PER_CYCLE = 15_000;
+const MAX_LOGS_PER_CYCLE = 10_000;
 
 // One PostgreSQL INSERT should stay reasonably sized.
 const MAX_LOGS_PER_INSERT = 2_000;
 
-const MAX_INSERT_ATTEMPTS = 3;
+const MAX_INSERT_ATTEMPTS = 2;
 
-const RETRY_DELAY_MS = 100;
+const RETRY_DELAY_MS = 50;
 
 let workerTimer: NodeJS.Timeout | undefined;
 
