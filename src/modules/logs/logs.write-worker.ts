@@ -10,12 +10,10 @@ import {
 
 import type { Log } from "./logs.type.js";
 
-const FLUSH_INTERVAL_MS = 100;
+const FLUSH_INTERVAL_MS = 150;
 
-// Worker may process at most this many logs per cycle.
 const MAX_LOGS_PER_CYCLE = 10_000;
 
-// One PostgreSQL INSERT should stay reasonably sized.
 const MAX_LOGS_PER_INSERT = 2_000;
 
 const MAX_INSERT_ATTEMPTS = 2;
