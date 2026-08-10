@@ -391,32 +391,32 @@ export const options = {
      * Exactly one aggregation
      * request/sec.
      */
-    aggregation: {
-      executor:
-        "constant-arrival-rate",
+    // aggregation: {
+    //   executor:
+    //     "constant-arrival-rate",
 
-      exec:
-        "aggregateLogs",
+    //   exec:
+    //     "aggregateLogs",
 
-      startTime:
-        QUERY_START_TIME,
+    //   startTime:
+    //     QUERY_START_TIME,
 
-      rate:
-        AGGREGATION_RPS,
+    //   rate:
+    //     AGGREGATION_RPS,
 
-      timeUnit:
-        "1s",
+    //   timeUnit:
+    //     "1s",
 
-      duration:
-        QUERY_DURATION,
+    //   duration:
+    //     QUERY_DURATION,
 
-      preAllocatedVUs: 10,
+    //   preAllocatedVUs: 10,
 
-      maxVUs: 50,
+    //   maxVUs: 50,
 
-      gracefulStop:
-        "15s",
-    },
+    //   gracefulStop:
+    //     "15s",
+    // },
 
     /*
      * Health check every

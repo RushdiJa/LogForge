@@ -144,156 +144,199 @@ export type AggregateRow = {
   group: string | null;
   count: number;
 };
-function getBucketInterval(
+function getRawBucketInterval(
   bucket: ParsedAggregateFilters["bucket"],
-): SQL {
+) {
   switch (bucket) {
     case "1m":
-      return sql`INTERVAL '1 minute'`;
+      return pg`INTERVAL '1 minute'`;
 
     case "5m":
-      return sql`INTERVAL '5 minutes'`;
+      return pg`INTERVAL '5 minutes'`;
 
     case "1h":
-      return sql`INTERVAL '1 hour'`;
+      return pg`INTERVAL '1 hour'`;
 
     case "1d":
-      return sql`INTERVAL '1 day'`;
+      return pg`INTERVAL '1 day'`;
   }
 }
+
 export async function aggregateLogs(
   filters: ParsedAggregateFilters,
 ): Promise<AggregateRow[]> {
-  const conditions: SQL[] = [
-    // since inclusive
-    gte(
-      logs.timestamp,
-      filters.since,
-    ),
-
-    // until exclusive
-    lt(
-      logs.timestamp,
-      filters.until,
-    ),
-  ];
-
-  if (filters.service !== undefined) {
-    conditions.push(
-      eq(
-        logs.service,
-        filters.service,
-      ),
-    );
-  }
-
-  if (filters.level !== undefined) {
-    conditions.push(
-      eq(
-        logs.level,
-        filters.level,
-      ),
-    );
-  }
-
-  /*
-   * Empty q matches everything anyway.
-   * Avoid evaluating ILIKE '%%' for every row.
-   */
-  if (
-    filters.q !== undefined &&
-    filters.q.length > 0
-  ) {
-    conditions.push(
-      ilike(
-        logs.message,
-        `%${escapeLike(filters.q)}%`,
-      ),
-    );
-  }
-
-  /*
-   * Avoid Object.entries() allocation.
-   */
-  for (const key in filters.attributes) {
-    conditions.push(
-      eq(
-        jsonbTextAttribute(key),
-        filters.attributes[key]!,
-      ),
-    );
-  }
-
-  const whereCondition =
-    and(...conditions);
+  const since = filters.since.toISOString();
+  const until = filters.until.toISOString();
 
   const interval =
-    getBucketInterval(
-      filters.bucket,
-    );
+    getRawBucketInterval(filters.bucket);
 
-  const bucketStart = sql<Date>`
-    date_bin(
-      ${interval},
-      ${logs.timestamp},
-      TIMESTAMPTZ '1970-01-01 00:00:00+00'
-    )
+  let attributeConditions = pg``;
+
+  for (const key in filters.attributes) {
+    const value =
+      filters.attributes[key]!;
+
+    attributeConditions = pg`
+      ${attributeConditions}
+      AND attributes ->> ${key} = ${value}
+    `;
+  }
+
+  const serviceCondition =
+    filters.service !== undefined
+      ? pg`
+          AND service = ${filters.service}
+        `
+      : pg``;
+
+  const levelCondition =
+    filters.level !== undefined
+      ? pg`
+          AND level = ${filters.level}::log_level
+        `
+      : pg``;
+
+  const queryCondition =
+    filters.q !== undefined &&
+    filters.q.length > 0
+      ? pg`
+          AND message ILIKE ${
+            `%${escapeLike(filters.q)}%`
+          }
+        `
+      : pg``;
+
+  /*
+   * GROUP BY service
+   */
+  if (filters.group_by === "service") {
+    const rows = await pg`
+      SELECT
+        date_bin(
+          ${interval},
+          timestamp,
+          TIMESTAMPTZ '1970-01-01 00:00:00+00'
+        ) AS start,
+
+        service AS "group",
+
+        count(*)::int AS count
+
+      FROM logs
+
+      WHERE
+        timestamp >= ${since}::timestamptz
+        AND timestamp < ${until}::timestamptz
+
+        ${serviceCondition}
+        ${levelCondition}
+        ${queryCondition}
+        ${attributeConditions}
+
+      GROUP BY
+        1,
+        service
+
+      ORDER BY
+        1 ASC,
+        service ASC
+    `;
+
+    return rows.map((row) => ({
+      start: new Date(
+        row.start as string,
+      ),
+      group: row.group as string,
+      count: Number(row.count),
+    }));
+  }
+
+  /*
+   * GROUP BY level
+   */
+  if (filters.group_by === "level") {
+    const rows = await pg`
+      SELECT
+        date_bin(
+          ${interval},
+          timestamp,
+          TIMESTAMPTZ '1970-01-01 00:00:00+00'
+        ) AS start,
+
+        level AS "group",
+
+        count(*)::int AS count
+
+      FROM logs
+
+      WHERE
+        timestamp >= ${since}::timestamptz
+        AND timestamp < ${until}::timestamptz
+
+        ${serviceCondition}
+        ${levelCondition}
+        ${queryCondition}
+        ${attributeConditions}
+
+      GROUP BY
+        1,
+        level
+
+      ORDER BY
+        1 ASC,
+        level ASC
+    `;
+
+    return rows.map((row) => ({
+      start: new Date(
+        row.start as string,
+      ),
+      group: row.group as string,
+      count: Number(row.count),
+    }));
+  }
+
+  /*
+   * No grouping
+   */
+  const rows = await pg`
+    SELECT
+      date_bin(
+        ${interval},
+        timestamp,
+        TIMESTAMPTZ '1970-01-01 00:00:00+00'
+      ) AS start,
+
+      NULL::text AS "group",
+
+      count(*)::int AS count
+
+    FROM logs
+
+    WHERE
+      timestamp >= ${since}::timestamptz
+      AND timestamp < ${until}::timestamptz
+
+      ${serviceCondition}
+      ${levelCondition}
+      ${queryCondition}
+      ${attributeConditions}
+
+    GROUP BY
+      1
+
+    ORDER BY
+      1 ASC
   `;
 
-  const count =
-    sql<number>`count(*)::int`;
-
-  switch (filters.group_by) {
-    case "service":
-      return db
-        .select({
-          start: bucketStart,
-          group: logs.service,
-          count,
-        })
-        .from(logs)
-        .where(whereCondition)
-        .groupBy(
-          bucketStart,
-          logs.service,
-        )
-        .orderBy(
-          asc(bucketStart),
-          asc(logs.service),
-        );
-
-    case "level":
-      return db
-        .select({
-          start: bucketStart,
-          group: logs.level,
-          count,
-        })
-        .from(logs)
-        .where(whereCondition)
-        .groupBy(
-          bucketStart,
-          logs.level,
-        )
-        .orderBy(
-          asc(bucketStart),
-          asc(logs.level),
-        );
-
-    default:
-      return db
-        .select({
-          start: bucketStart,
-          group: sql<null>`NULL`,
-          count,
-        })
-        .from(logs)
-        .where(whereCondition)
-        .groupBy(bucketStart)
-        .orderBy(
-          asc(bucketStart),
-        );
-  }
+  return rows.map((row) => ({
+    start: new Date(
+      row.start as string,
+    ),
+    group: null,
+    count: Number(row.count),
+  }));
 }
 
 export async function insertLogsBatch(
