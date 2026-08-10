@@ -2,12 +2,13 @@ import "dotenv/config";
 import { createApp } from "./app.js";
 import { runMigrations } from "./db/migrate.js";
 import { startRetentionJob } from "./modules/logs/logs.retention.worker.js";
+import { startLogsWriteWorker } from "./modules/logs/logs.write-worker.ts";
 
 const port: number = Number(process.env.PORT ?? 8080);
 async function startServer(): Promise<void> {
   await runMigrations();
   startRetentionJob();
-  
+  startLogsWriteWorker();
   const app = createApp();
 
   app.listen(port, () => {

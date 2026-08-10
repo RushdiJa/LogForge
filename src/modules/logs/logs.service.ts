@@ -1,12 +1,21 @@
 import {AggregateFilters, validateLogsFilters, validLogs} from "./logs.validation.js";
-import {aggregateLogs, insertLog, insertLogsBatch, queryLogs} from "./logs.repository.js";
-import {type LogsFilters, type ParsedAggregateFilters, type ParsedLogsFilters, type ValidateLogsResult} from "./logs.type.js";
+import {aggregateLogs, insertLogsBatch, queryLogs} from "./logs.repository.js";
+import {LogsError, type LogsFilters, type ParsedAggregateFilters, type ParsedLogsFilters, type ValidateLogsResult} from "./logs.type.js";
 import { encodeLogsCursor } from "./logs.utilities.js";
+import { enqueueLogs } from "./logs.write-queue.ts";
 
 export async function insertLogs(logs: unknown) : Promise<ValidateLogsResult> {
     const result : ValidateLogsResult = await validLogs(logs);
     if (result.valid.length > 0) {
-      await insertLogsBatch(result.valid);
+      try {
+        await enqueueLogs(result.valid);
+      } catch {
+        throw new LogsError(
+          "LOGS_DATABASE_ERROR",
+          500,
+          "Failed to persist logs",
+        );
+      }
     }
     return result;
 }

@@ -1,4 +1,4 @@
-import { db } from "../../db/index.js";
+import { db, pg } from "../../db/index.js";
 import { logs } from "../../db/schema.js";
 import { type Log , LogsError, type ParsedAggregateFilters, type ParsedLogsFilters} from "./logs.type.js";
 import {
@@ -17,18 +17,19 @@ import {
 
 export type StoredLog = typeof logs.$inferSelect;
 
-export async function insertLog(log: Log) : Promise<void> {
-    try{
-        await db.insert(logs).values(log).execute();
-    }
-    catch(error : unknown){
-        throw new LogsError(
-            "LOGS_DATABASE_ERROR",
-            500,
-            "Could not insert log",
-        );
-    }
-}
+// export async function insertLog(log: Log) : Promise<void> {
+//     try{
+//         await db.insert(logs).values(log).execute();
+//     }
+//     catch(error : unknown){
+//         throw new LogsError(
+//             "LOGS_DATABASE_ERROR",
+//             500,
+//             "Could not insert log",
+//         );
+//     }
+// }
+
 
 function escapeLike(value: string): string {
   return value
@@ -233,6 +234,26 @@ export async function aggregateLogs(
     .orderBy(asc(bucketStart));
 }
 
+// export async function insertLogsBatch(
+//   logsToInsert: Log[],
+// ): Promise<void> {
+//   if (logsToInsert.length === 0) {
+//     return;
+//   }
+
+//   await db
+//     .insert(logs)
+//     .values(logsToInsert);
+// }
+// export async function insertLogsBatch(
+//   logsToInsert: Log[],
+// ): Promise<void> {
+//   if (logsToInsert.length === 0) {
+//     return;
+//   }
+
+//   return;
+// }
 export async function insertLogsBatch(
   logsToInsert: Log[],
 ): Promise<void> {
@@ -240,7 +261,30 @@ export async function insertLogsBatch(
     return;
   }
 
-  await db
-    .insert(logs)
-    .values(logsToInsert);
+  const rows = logsToInsert.map((log) => ({
+    timestamp: log.timestamp.toISOString(),
+
+    level: log.level,
+
+    service: log.service,
+
+    message: log.message,
+
+    attributes: JSON.stringify(
+      log.attributes ?? {},
+    ),
+  }));
+
+  await pg`
+    INSERT INTO logs ${
+      pg(
+        rows,
+        "timestamp",
+        "level",
+        "service",
+        "message",
+        "attributes",
+      )
+    }
+  `;
 }
