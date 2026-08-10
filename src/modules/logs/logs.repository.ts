@@ -17,20 +17,6 @@ import {
 
 export type StoredLog = typeof logs.$inferSelect;
 
-// export async function insertLog(log: Log) : Promise<void> {
-//     try{
-//         await db.insert(logs).values(log).execute();
-//     }
-//     catch(error : unknown){
-//         throw new LogsError(
-//             "LOGS_DATABASE_ERROR",
-//             500,
-//             "Could not insert log",
-//         );
-//     }
-// }
-
-
 function escapeLike(value: string): string {
   return value
     .replaceAll("\\", "\\\\")
@@ -43,66 +29,114 @@ function jsonbTextAttribute(key: string): SQL<string> {
 export async function queryLogs(
   filters: ParsedLogsFilters,
 ): Promise<StoredLog[]> {
-    const conditions: SQL[] = [];
-    if (filters.service !== undefined) {
-        conditions.push(
-            eq(logs.service, filters.service),
-        );
-    }
-    if (filters.level !== undefined) {
-        conditions.push(
-            eq(logs.level, filters.level),
-        );
-    }
-    if (filters.since !== undefined) {
-        conditions.push(
-            gte(logs.timestamp, filters.since),
-        );
+  let attributeConditions = pg``;
+
+  for (const key in filters.attributes) {
+    const value = filters.attributes[key]!;
+
+    attributeConditions = pg`
+      ${attributeConditions}
+      AND attributes ->> ${key} = ${value}
+    `;
+  }
+
+  const since =
+    filters.since?.toISOString();
+
+  const until =
+    filters.until?.toISOString();
+
+  const cursorTimestamp =
+    filters.cursor?.timestamp.toISOString();
+
+  const rows = await pg`
+    SELECT
+      id,
+      timestamp,
+      level,
+      service,
+      message,
+      attributes
+    FROM logs
+    WHERE TRUE
+
+    ${
+      filters.service !== undefined
+        ? pg`
+            AND service = ${filters.service}
+          `
+        : pg``
     }
 
-    if (filters.until !== undefined) {
-        conditions.push(
-            lt(logs.timestamp, filters.until),
-        );
+    ${
+      filters.level !== undefined
+        ? pg`
+            AND level = ${filters.level}::log_level
+          `
+        : pg``
     }
-    if (filters.q !== undefined) {
-        const escapedQuery = escapeLike(filters.q);
 
-        conditions.push(
-            ilike(logs.message, `%${escapedQuery}%`),
-        );
+    ${
+      since !== undefined
+        ? pg`
+            AND timestamp >= ${since}::timestamptz
+          `
+        : pg``
     }
-    if (filters.cursor !== undefined) {
-        conditions.push(
-            or(
-                lt(logs.timestamp, filters.cursor.timestamp),
-                and(
-                    eq(logs.timestamp, filters.cursor.timestamp),
-                    lt(logs.id, filters.cursor.id),
-                ),
-            )!,
-        );
+
+    ${
+      until !== undefined
+        ? pg`
+            AND timestamp < ${until}::timestamptz
+          `
+        : pg``
     }
-    if(filters.attributes !== undefined){
-        for (const [key, value] of Object.entries(filters.attributes)) {
-            conditions.push(
-                eq(jsonbTextAttribute(key), value),
-            );
-        }
+
+    ${
+      filters.q !== undefined &&
+      filters.q.length > 0
+        ? pg`
+            AND message ILIKE ${
+              `%${escapeLike(filters.q)}%`
+            }
+          `
+        : pg``
     }
-    return db
-    .select()
-    .from(logs)
-    .where(
-        conditions.length > 0
-        ? and(...conditions)
-        : undefined,
-    )
-    .orderBy(
-        desc(logs.timestamp),
-        desc(logs.id),
-    )
-    .limit(filters.limit + 1);
+
+    ${
+      filters.cursor !== undefined &&
+      cursorTimestamp !== undefined
+        ? pg`
+            AND (
+              timestamp < ${cursorTimestamp}::timestamptz
+              OR (
+                timestamp = ${cursorTimestamp}::timestamptz
+                AND id < ${filters.cursor.id}
+              )
+            )
+          `
+        : pg``
+    }
+
+    ${attributeConditions}
+
+    ORDER BY
+      timestamp DESC,
+      id DESC
+
+    LIMIT ${filters.limit + 1}
+  `;
+
+  return rows.map((row) => ({
+    id: Number(row.id),
+    timestamp: new Date(
+      row.timestamp as string,
+    ),
+    level: row.level,
+    service: row.service,
+    message: row.message,
+    attributes: row.attributes,
+  })) as StoredLog[];
 }
 
 export type AggregateRow = {
