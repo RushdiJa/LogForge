@@ -1,6 +1,6 @@
 import { pg } from "../../db/index.js";
 
-const ROLLUP_INTERVAL_MS = 5000;
+const ROLLUP_INTERVAL_MS = 1000;
 
 let rollupTimer:
   | NodeJS.Timeout
