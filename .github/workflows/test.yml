@@ -47,6 +47,8 @@ jobs:
           exit 1
 
       - name: Run Vitest tests
+        env:
+          DATABASE_URL: postgresql://logforge:logforge@localhost:5433/logforge
         run: npm test
 
       - name: Show Docker logs on failure
