@@ -162,7 +162,7 @@ function getRawBucketInterval(
   }
 }
 
-export async function aggregateLogs(
+export async function aggregateRawLogs(
   filters: ParsedAggregateFilters,
 ): Promise<AggregateRow[]> {
   const since = filters.since.toISOString();
@@ -338,7 +338,327 @@ export async function aggregateLogs(
     count: Number(row.count),
   }));
 }
+export async function aggregateLogs(
+  filters: ParsedAggregateFilters,
+): Promise<AggregateRow[]> {
+  if (
+    (filters.q !== undefined &&
+      filters.q.length > 0) ||
+    Object.keys(filters.attributes).length > 0
+  ) {
+    return aggregateRawLogs(filters);
+  }
 
+  const since =
+    filters.since.toISOString();
+
+  const until =
+    filters.until.toISOString();
+
+  const interval =
+    getRawBucketInterval(filters.bucket);
+
+  const minuteMs = 60_000;
+
+  const fullMinuteStart =
+    new Date(
+      Math.ceil(
+        filters.since.getTime() /
+          minuteMs,
+      ) * minuteMs,
+    ).toISOString();
+
+  const fullMinuteEnd =
+    new Date(
+      Math.floor(
+        filters.until.getTime() /
+          minuteMs,
+      ) * minuteMs,
+    ).toISOString();
+
+  const rollupServiceCondition =
+    filters.service !== undefined
+      ? pg`
+          AND service = ${filters.service}
+        `
+      : pg``;
+
+  const rollupLevelCondition =
+    filters.level !== undefined
+      ? pg`
+          AND level = ${filters.level}::log_level
+        `
+      : pg``;
+
+  const rawServiceCondition =
+    filters.service !== undefined
+      ? pg`
+          AND logs.service = ${filters.service}
+        `
+      : pg``;
+
+  const rawLevelCondition =
+    filters.level !== undefined
+      ? pg`
+          AND logs.level = ${filters.level}::log_level
+        `
+      : pg``;
+
+  /*
+   * GROUP BY service
+   */
+  if (filters.group_by === "service") {
+    const rows = await pg`
+      WITH progress AS (
+        SELECT
+          COALESCE(
+            (
+              SELECT last_log_id
+              FROM log_rollup_progress
+              WHERE name = '1m'
+            ),
+            0
+          )::bigint AS last_log_id
+      ),
+
+      source AS (
+        SELECT
+          bucket_start AS timestamp,
+          service,
+          count
+        FROM log_rollups_1m
+        WHERE
+          bucket_start >= ${fullMinuteStart}::timestamptz
+          AND bucket_start < ${fullMinuteEnd}::timestamptz
+
+          ${rollupServiceCondition}
+          ${rollupLevelCondition}
+
+        UNION ALL
+
+        SELECT
+          logs.timestamp,
+          logs.service,
+          1::bigint AS count
+        FROM logs
+        CROSS JOIN progress
+        WHERE
+          logs.timestamp >= ${since}::timestamptz
+          AND logs.timestamp < ${until}::timestamptz
+
+          AND (
+            logs.id > progress.last_log_id
+
+            OR logs.timestamp <
+              ${fullMinuteStart}::timestamptz
+
+            OR logs.timestamp >=
+              ${fullMinuteEnd}::timestamptz
+          )
+
+          ${rawServiceCondition}
+          ${rawLevelCondition}
+      )
+
+      SELECT
+        date_bin(
+          ${interval},
+          timestamp,
+          TIMESTAMPTZ '1970-01-01 00:00:00+00'
+        ) AS start,
+
+        service AS "group",
+
+        SUM(count)::bigint AS count
+
+      FROM source
+
+      GROUP BY
+        1,
+        service
+
+      ORDER BY
+        1 ASC,
+        service ASC
+    `;
+
+    return rows.map((row) => ({
+      start: new Date(
+        row.start as string,
+      ),
+      group: row.group as string,
+      count: Number(row.count),
+    }));
+  }
+
+  /*
+   * GROUP BY level
+   */
+  if (filters.group_by === "level") {
+    const rows = await pg`
+      WITH progress AS (
+        SELECT
+          COALESCE(
+            (
+              SELECT last_log_id
+              FROM log_rollup_progress
+              WHERE name = '1m'
+            ),
+            0
+          )::bigint AS last_log_id
+      ),
+
+      source AS (
+        SELECT
+          bucket_start AS timestamp,
+          level,
+          count
+        FROM log_rollups_1m
+        WHERE
+          bucket_start >= ${fullMinuteStart}::timestamptz
+          AND bucket_start < ${fullMinuteEnd}::timestamptz
+
+          ${rollupServiceCondition}
+          ${rollupLevelCondition}
+
+        UNION ALL
+
+        SELECT
+          logs.timestamp,
+          logs.level,
+          1::bigint AS count
+        FROM logs
+        CROSS JOIN progress
+        WHERE
+          logs.timestamp >= ${since}::timestamptz
+          AND logs.timestamp < ${until}::timestamptz
+
+          AND (
+            logs.id > progress.last_log_id
+
+            OR logs.timestamp <
+              ${fullMinuteStart}::timestamptz
+
+            OR logs.timestamp >=
+              ${fullMinuteEnd}::timestamptz
+          )
+
+          ${rawServiceCondition}
+          ${rawLevelCondition}
+      )
+
+      SELECT
+        date_bin(
+          ${interval},
+          timestamp,
+          TIMESTAMPTZ '1970-01-01 00:00:00+00'
+        ) AS start,
+
+        level::text AS "group",
+
+        SUM(count)::bigint AS count
+
+      FROM source
+
+      GROUP BY
+        1,
+        level
+
+      ORDER BY
+        1 ASC,
+        level ASC
+    `;
+
+    return rows.map((row) => ({
+      start: new Date(
+        row.start as string,
+      ),
+      group: row.group as string,
+      count: Number(row.count),
+    }));
+  }
+
+  /*
+   * No grouping
+   */
+  const rows = await pg`
+    WITH progress AS (
+      SELECT
+        COALESCE(
+          (
+            SELECT last_log_id
+            FROM log_rollup_progress
+            WHERE name = '1m'
+          ),
+          0
+        )::bigint AS last_log_id
+    ),
+
+    source AS (
+      SELECT
+        bucket_start AS timestamp,
+        count
+      FROM log_rollups_1m
+      WHERE
+        bucket_start >= ${fullMinuteStart}::timestamptz
+        AND bucket_start < ${fullMinuteEnd}::timestamptz
+
+        ${rollupServiceCondition}
+        ${rollupLevelCondition}
+
+      UNION ALL
+
+      SELECT
+        logs.timestamp,
+        1::bigint AS count
+      FROM logs
+      CROSS JOIN progress
+      WHERE
+        logs.timestamp >= ${since}::timestamptz
+        AND logs.timestamp < ${until}::timestamptz
+
+        AND (
+          logs.id > progress.last_log_id
+
+          OR logs.timestamp <
+            ${fullMinuteStart}::timestamptz
+
+          OR logs.timestamp >=
+            ${fullMinuteEnd}::timestamptz
+        )
+
+        ${rawServiceCondition}
+        ${rawLevelCondition}
+    )
+
+    SELECT
+      date_bin(
+        ${interval},
+        timestamp,
+        TIMESTAMPTZ '1970-01-01 00:00:00+00'
+      ) AS start,
+
+      NULL::text AS "group",
+
+      SUM(count)::bigint AS count
+
+    FROM source
+
+    GROUP BY
+      1
+
+    ORDER BY
+      1 ASC
+  `;
+
+  return rows.map((row) => ({
+    start: new Date(
+      row.start as string,
+    ),
+    group: null,
+    count: Number(row.count),
+  }));
+}
 export async function insertLogsBatch(
   logsToInsert: Log[],
 ): Promise<void> {
