@@ -1,18 +1,29 @@
-import type { Request, Response } from "express";
+import type {
+  FastifyRequest,
+  FastifyReply,
+} from "fastify";
 
 import { checkHealth } from "./health.service.js";
 
 export async function getHealth(
-  req: Request,
-  res: Response,
+  _request: FastifyRequest,
+  reply: FastifyReply,
 ): Promise<void> {
-    const health = await checkHealth();
+  const health = await checkHealth();
 
-    if (!health.ready) {
-        res.status(503).json({status: "not_ready"});
-    }
-    else{
-        res.status(200).json({status: "ok"});
-    }   
+  if (!health.ready) {
+    reply
+      .code(503)
+      .send({
+        status: "not_ready",
+      });
 
+    return;
+  }
+
+  reply
+    .code(200)
+    .send({
+      status: "ok",
+    });
 }
