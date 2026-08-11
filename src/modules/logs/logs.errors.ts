@@ -1,23 +1,49 @@
-import type { ErrorRequestHandler } from "express";
+import type {
+  FastifyError,
+  FastifyReply,
+  FastifyRequest,
+} from "fastify";
+
 import { LogsError } from "./logs.type.js";
 
-export const logsErrorHandler: ErrorRequestHandler = (
-  error: unknown,
-  _req,
-  res,
-  _next,
-): void => {
+export function logsErrorHandler(
+  error: FastifyError | Error,
+  _request: FastifyRequest,
+  reply: FastifyReply,
+): void {
   if (error instanceof LogsError) {
-    res.status(error.statusCode).json({
-      error: error.message,
-    });
+    reply
+      .code(error.statusCode)
+      .send({
+        error: error.message,
+      });
 
     return;
   }
 
-  console.error("Unexpected logs error:", error);
+  if (
+    "statusCode" in error &&
+    typeof error.statusCode === "number" &&
+    error.statusCode < 500
+  ) {
+    reply
+      .code(error.statusCode)
+      .send({
+        error: error.message,
+      });
 
-  res.status(500).json({
-    error: "An unexpected error occurred",
-  });
-};
+    return;
+  }
+
+  console.error(
+    "Unexpected logs error:",
+    error,
+  );
+
+  reply
+    .code(500)
+    .send({
+      error:
+        "An unexpected error occurred",
+    });
+}

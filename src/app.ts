@@ -1,14 +1,25 @@
-import express, { type Express, type Request, type Response } from 'express';
-import {healthRouter} from "./modules/health/health.routes.js";
-import { logsRouter } from './modules/logs/logs.routes.ts';
+import Fastify, {
+  type FastifyInstance,
+} from "fastify";
 
+import { healthRoutes } from "./modules/health/health.routes.js";
+import { logsRoutes } from "./modules/logs/logs.routes.js";
 
-export function createApp() : Express {
-    const app: Express = express();
+export function createApp(): FastifyInstance {
+  const app = Fastify({
+    logger: false,
 
-    app.use(express.json({limit: "1mb"}));
-    app.use('/health', healthRouter);
-    app.use('/logs', logsRouter);
-    
-    return app;
+    // Same as express.json({ limit: "1mb" })
+    bodyLimit: 1024 * 1024,
+  });
+
+  app.register(healthRoutes, {
+    prefix: "/health",
+  });
+
+  app.register(logsRoutes, {
+    prefix: "/logs",
+  });
+
+  return app;
 }

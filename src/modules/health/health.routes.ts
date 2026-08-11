@@ -1,5 +1,8 @@
-import { Router } from "express";
+import type { FastifyInstance } from "fastify";
 import { getHealth } from "./health.controller.js";
 
-export const healthRouter : Router = Router();
-healthRouter.get("/", getHealth);
+export async function healthRoutes(
+  app: FastifyInstance,
+): Promise<void> {
+  app.get("/", getHealth);
+}

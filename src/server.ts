@@ -13,8 +13,9 @@ async function startServer(): Promise<void> {
   startLogRollupWorker();
   const app = createApp();
 
-  app.listen(port, () => {
-    console.log(`Server listening on port ${port}`);
+  await app.listen({
+    port,
+    host: "0.0.0.0",
   });
 }
 
