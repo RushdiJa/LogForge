@@ -1,21 +1,19 @@
-import { db, pg } from "../../db/index.js";
+import { pg, writePg } from "../../db/index.js";
 import { logs } from "../../db/schema.js";
-import { type Log , LogsError, type ParsedAggregateFilters, type ParsedLogsFilters} from "./logs.type.js";
-import {
-  and,
-  desc,
-  eq,
-  gte,
-  lt,
-  type SQL,
-  or,
-  ilike,
-  sql,
-  asc
-  
-} from "drizzle-orm";
+
+import type {
+  Log,
+  ParsedAggregateFilters,
+  ParsedLogsFilters,
+} from "./logs.type.js";
 
 export type StoredLog = typeof logs.$inferSelect;
+
+export type AggregateRow = {
+  start: Date;
+  group: string | null;
+  count: number;
+};
 
 function escapeLike(value: string): string {
   return value
@@ -23,9 +21,7 @@ function escapeLike(value: string): string {
     .replaceAll("%", "\\%")
     .replaceAll("_", "\\_");
 }
-function jsonbTextAttribute(key: string): SQL<string> {
-  return sql<string>`jsonb_extract_path_text(${logs.attributes}, ${key})`;
-}
+
 export async function queryLogs(
   filters: ParsedLogsFilters,
 ): Promise<StoredLog[]> {
@@ -40,12 +36,8 @@ export async function queryLogs(
     `;
   }
 
-  const since =
-    filters.since?.toISOString();
-
-  const until =
-    filters.until?.toISOString();
-
+  const since = filters.since?.toISOString();
+  const until = filters.until?.toISOString();
   const cursorTimestamp =
     filters.cursor?.timestamp.toISOString();
 
@@ -59,79 +51,58 @@ export async function queryLogs(
       attributes
     FROM logs
     WHERE TRUE
-
-    ${
-      filters.service !== undefined
-        ? pg`
-            AND service = ${filters.service}
-          `
-        : pg``
-    }
-
-    ${
-      filters.level !== undefined
-        ? pg`
-            AND level = ${filters.level}::log_level
-          `
-        : pg``
-    }
-
-    ${
-      since !== undefined
-        ? pg`
-            AND timestamp >= ${since}::timestamptz
-          `
-        : pg``
-    }
-
-    ${
-      until !== undefined
-        ? pg`
-            AND timestamp < ${until}::timestamptz
-          `
-        : pg``
-    }
-
-    ${
-      filters.q !== undefined &&
-      filters.q.length > 0
-        ? pg`
-            AND message ILIKE ${
-              `%${escapeLike(filters.q)}%`
-            }
-          `
-        : pg``
-    }
-
-    ${
-      filters.cursor !== undefined &&
-      cursorTimestamp !== undefined
-        ? pg`
-            AND (
-              timestamp < ${cursorTimestamp}::timestamptz
-              OR (
-                timestamp = ${cursorTimestamp}::timestamptz
-                AND id < ${filters.cursor.id}
+      ${
+        filters.service !== undefined
+          ? pg`AND service = ${filters.service}`
+          : pg``
+      }
+      ${
+        filters.level !== undefined
+          ? pg`AND level = ${filters.level}::log_level`
+          : pg``
+      }
+      ${
+        since !== undefined
+          ? pg`AND timestamp >= ${since}::timestamptz`
+          : pg``
+      }
+      ${
+        until !== undefined
+          ? pg`AND timestamp < ${until}::timestamptz`
+          : pg``
+      }
+      ${
+        filters.q !== undefined &&
+        filters.q.length > 0
+          ? pg`
+              AND message ILIKE ${
+                `%${escapeLike(filters.q)}%`
+              }
+            `
+          : pg``
+      }
+      ${
+        filters.cursor !== undefined &&
+        cursorTimestamp !== undefined
+          ? pg`
+              AND (
+                timestamp < ${cursorTimestamp}::timestamptz
+                OR (
+                  timestamp = ${cursorTimestamp}::timestamptz
+                  AND id < ${filters.cursor.id}
+                )
               )
-            )
-          `
-        : pg``
-    }
-
-    ${attributeConditions}
-
-    ORDER BY
-      timestamp DESC,
-      id DESC
-
+            `
+          : pg``
+      }
+      ${attributeConditions}
+    ORDER BY timestamp DESC, id DESC
     LIMIT ${filters.limit + 1}
   `;
 
   return rows.map((row) => ({
     id: Number(row.id),
-    timestamp: new Date(
-      row.timestamp as string,
-    ),
+    timestamp: new Date(row.timestamp as string),
     level: row.level,
     service: row.service,
     message: row.message,
@@ -139,43 +110,50 @@ export async function queryLogs(
   })) as StoredLog[];
 }
 
-export type AggregateRow = {
-  start: Date;
-  group: string | null;
-  count: number;
-};
 function getRawBucketInterval(
   bucket: ParsedAggregateFilters["bucket"],
 ) {
   switch (bucket) {
     case "1m":
       return pg`INTERVAL '1 minute'`;
-
     case "5m":
       return pg`INTERVAL '5 minutes'`;
-
     case "1h":
       return pg`INTERVAL '1 hour'`;
-
     case "1d":
       return pg`INTERVAL '1 day'`;
   }
 }
 
-export async function aggregateRawLogs(
+function mapAggregateRows(
+  rows: Record<string, unknown>[],
+): AggregateRow[] {
+  return rows.map((row) => ({
+    start: new Date(row.start as string),
+    group:
+      row.group === null
+        ? null
+        : String(row.group),
+    count: Number(row.count),
+  }));
+}
+
+/*
+ * q and arbitrary attribute equality cannot be represented by the
+ * service/level rollup. Those combinations intentionally use the
+ * raw table so every API filter remains correct.
+ */
+async function aggregateRawLogs(
   filters: ParsedAggregateFilters,
 ): Promise<AggregateRow[]> {
   const since = filters.since.toISOString();
   const until = filters.until.toISOString();
-
-  const interval =
-    getRawBucketInterval(filters.bucket);
+  const interval = getRawBucketInterval(filters.bucket);
 
   let attributeConditions = pg``;
 
   for (const key in filters.attributes) {
-    const value =
-      filters.attributes[key]!;
+    const value = filters.attributes[key]!;
 
     attributeConditions = pg`
       ${attributeConditions}
@@ -183,123 +161,23 @@ export async function aggregateRawLogs(
     `;
   }
 
-  const serviceCondition =
-    filters.service !== undefined
-      ? pg`
-          AND service = ${filters.service}
-        `
-      : pg``;
+  const groupExpression =
+    filters.group_by === "service"
+      ? pg`service`
+      : filters.group_by === "level"
+        ? pg`level::text`
+        : pg`NULL::text`;
 
-  const levelCondition =
-    filters.level !== undefined
-      ? pg`
-          AND level = ${filters.level}::log_level
-        `
-      : pg``;
+  const groupBySuffix =
+    filters.group_by === undefined
+      ? pg``
+      : pg`, 2`;
 
-  const queryCondition =
-    filters.q !== undefined &&
-    filters.q.length > 0
-      ? pg`
-          AND message ILIKE ${
-            `%${escapeLike(filters.q)}%`
-          }
-        `
-      : pg``;
+  const orderBySuffix =
+    filters.group_by === undefined
+      ? pg``
+      : pg`, 2 ASC`;
 
-  /*
-   * GROUP BY service
-   */
-  if (filters.group_by === "service") {
-    const rows = await pg`
-      SELECT
-        date_bin(
-          ${interval},
-          timestamp,
-          TIMESTAMPTZ '1970-01-01 00:00:00+00'
-        ) AS start,
-
-        service AS "group",
-
-        count(*)::int AS count
-
-      FROM logs
-
-      WHERE
-        timestamp >= ${since}::timestamptz
-        AND timestamp < ${until}::timestamptz
-
-        ${serviceCondition}
-        ${levelCondition}
-        ${queryCondition}
-        ${attributeConditions}
-
-      GROUP BY
-        1,
-        service
-
-      ORDER BY
-        1 ASC,
-        service ASC
-    `;
-
-    return rows.map((row) => ({
-      start: new Date(
-        row.start as string,
-      ),
-      group: row.group as string,
-      count: Number(row.count),
-    }));
-  }
-
-  /*
-   * GROUP BY level
-   */
-  if (filters.group_by === "level") {
-    const rows = await pg`
-      SELECT
-        date_bin(
-          ${interval},
-          timestamp,
-          TIMESTAMPTZ '1970-01-01 00:00:00+00'
-        ) AS start,
-
-        level AS "group",
-
-        count(*)::int AS count
-
-      FROM logs
-
-      WHERE
-        timestamp >= ${since}::timestamptz
-        AND timestamp < ${until}::timestamptz
-
-        ${serviceCondition}
-        ${levelCondition}
-        ${queryCondition}
-        ${attributeConditions}
-
-      GROUP BY
-        1,
-        level
-
-      ORDER BY
-        1 ASC,
-        level ASC
-    `;
-
-    return rows.map((row) => ({
-      start: new Date(
-        row.start as string,
-      ),
-      group: row.group as string,
-      count: Number(row.count),
-    }));
-  }
-
-  /*
-   * No grouping
-   */
   const rows = await pg`
     SELECT
       date_bin(
@@ -307,358 +185,225 @@ export async function aggregateRawLogs(
         timestamp,
         TIMESTAMPTZ '1970-01-01 00:00:00+00'
       ) AS start,
-
-      NULL::text AS "group",
-
-      count(*)::int AS count
-
+      ${groupExpression} AS "group",
+      count(*)::bigint AS count
     FROM logs
-
     WHERE
       timestamp >= ${since}::timestamptz
       AND timestamp < ${until}::timestamptz
-
-      ${serviceCondition}
-      ${levelCondition}
-      ${queryCondition}
+      ${
+        filters.service !== undefined
+          ? pg`AND service = ${filters.service}`
+          : pg``
+      }
+      ${
+        filters.level !== undefined
+          ? pg`AND level = ${filters.level}::log_level`
+          : pg``
+      }
+      ${
+        filters.q !== undefined &&
+        filters.q.length > 0
+          ? pg`
+              AND message ILIKE ${
+                `%${escapeLike(filters.q)}%`
+              }
+            `
+          : pg``
+      }
       ${attributeConditions}
-
-    GROUP BY
-      1
-
-    ORDER BY
-      1 ASC
+    GROUP BY 1 ${groupBySuffix}
+    ORDER BY 1 ASC ${orderBySuffix}
   `;
 
-  return rows.map((row) => ({
-    start: new Date(
-      row.start as string,
-    ),
-    group: null,
-    count: Number(row.count),
-  }));
+  return mapAggregateRows(rows);
 }
-export async function aggregateLogs(
+
+/*
+ * Select the coarsest rollup that cannot change the requested output:
+ *
+ * - 1h/1d buckets use complete hour rollups;
+ * - 1m/5m buckets start with complete minute rollups;
+ * - boundary minutes use complete second rollups;
+ * - only the two partial boundary seconds touch raw logs.
+ *
+ * This preserves exact inclusive-since/exclusive-until behavior without
+ * scanning the hot current minute during sustained ingestion.
+ */
+async function aggregateRolledUpLogs(
   filters: ParsedAggregateFilters,
 ): Promise<AggregateRow[]> {
-  if (
-    (filters.q !== undefined &&
-      filters.q.length > 0) ||
-    Object.keys(filters.attributes).length > 0
-  ) {
-    return aggregateRawLogs(filters);
-  }
-
-  const since =
-    filters.since.toISOString();
-
-  const until =
-    filters.until.toISOString();
-
-  const interval =
-    getRawBucketInterval(filters.bucket);
-
+  const secondMs = 1_000;
   const minuteMs = 60_000;
+  const hourMs = 60 * minuteMs;
 
-  const fullMinuteStart =
-    new Date(
-      Math.ceil(
-        filters.since.getTime() /
-          minuteMs,
-      ) * minuteMs,
-    ).toISOString();
+  const useHourRollups =
+    filters.bucket === "1h" ||
+    filters.bucket === "1d";
 
-  const fullMinuteEnd =
-    new Date(
-      Math.floor(
-        filters.until.getTime() /
-          minuteMs,
-      ) * minuteMs,
-    ).toISOString();
+  const fullSecondStart = new Date(
+    Math.ceil(filters.since.getTime() / secondMs) * secondMs,
+  ).toISOString();
 
-  const rollupServiceCondition =
+  const fullSecondEnd = new Date(
+    Math.floor(filters.until.getTime() / secondMs) * secondMs,
+  ).toISOString();
+
+  const fullMinuteStart = new Date(
+    Math.ceil(filters.since.getTime() / minuteMs) * minuteMs,
+  ).toISOString();
+
+  const fullMinuteEnd = new Date(
+    Math.floor(filters.until.getTime() / minuteMs) * minuteMs,
+  ).toISOString();
+
+  const fullHourStart = new Date(
+    Math.ceil(filters.since.getTime() / hourMs) * hourMs,
+  ).toISOString();
+
+  const fullHourEnd = new Date(
+    Math.floor(filters.until.getTime() / hourMs) * hourMs,
+  ).toISOString();
+
+  const since = filters.since.toISOString();
+  const until = filters.until.toISOString();
+  const interval = getRawBucketInterval(filters.bucket);
+
+  const groupExpression =
+    filters.group_by === "service"
+      ? pg`service`
+      : filters.group_by === "level"
+        ? pg`level::text`
+        : pg`NULL::text`;
+
+  const groupBySuffix =
+    filters.group_by === undefined
+      ? pg``
+      : pg`, 2`;
+
+  const orderBySuffix =
+    filters.group_by === undefined
+      ? pg``
+      : pg`, 2 ASC`;
+
+  const serviceCondition =
     filters.service !== undefined
-      ? pg`
-          AND service = ${filters.service}
-        `
+      ? pg`AND service = ${filters.service}`
       : pg``;
 
-  const rollupLevelCondition =
+  const levelCondition =
     filters.level !== undefined
-      ? pg`
-          AND level = ${filters.level}::log_level
-        `
+      ? pg`AND level = ${filters.level}::log_level`
       : pg``;
 
-  const rawServiceCondition =
-    filters.service !== undefined
-      ? pg`
-          AND logs.service = ${filters.service}
-        `
-      : pg``;
-
-  const rawLevelCondition =
-    filters.level !== undefined
-      ? pg`
-          AND logs.level = ${filters.level}::log_level
-        `
-      : pg``;
-
-  /*
-   * GROUP BY service
-   */
-  if (filters.group_by === "service") {
-    const rows = await pg`
-      WITH progress AS (
-        SELECT
-          COALESCE(
-            (
-              SELECT last_log_id
-              FROM log_rollup_progress
-              WHERE name = '1m'
-            ),
-            0
-          )::bigint AS last_log_id
-      ),
-
-      source AS (
+  const hourSource = useHourRollups
+    ? pg`
         SELECT
           bucket_start AS timestamp,
           service,
-          count
-        FROM log_rollups_1m
-        WHERE
-          bucket_start >= ${fullMinuteStart}::timestamptz
-          AND bucket_start < ${fullMinuteEnd}::timestamptz
-
-          ${rollupServiceCondition}
-          ${rollupLevelCondition}
-
-        UNION ALL
-
-        SELECT
-          logs.timestamp,
-          logs.service,
-          1::bigint AS count
-        FROM logs
-        CROSS JOIN progress
-        WHERE
-          logs.timestamp >= ${since}::timestamptz
-          AND logs.timestamp < ${until}::timestamptz
-
-          AND (
-            logs.id > progress.last_log_id
-
-            OR logs.timestamp <
-              ${fullMinuteStart}::timestamptz
-
-            OR logs.timestamp >=
-              ${fullMinuteEnd}::timestamptz
-          )
-
-          ${rawServiceCondition}
-          ${rawLevelCondition}
-      )
-
-      SELECT
-        date_bin(
-          ${interval},
-          timestamp,
-          TIMESTAMPTZ '1970-01-01 00:00:00+00'
-        ) AS start,
-
-        service AS "group",
-
-        SUM(count)::bigint AS count
-
-      FROM source
-
-      GROUP BY
-        1,
-        service
-
-      ORDER BY
-        1 ASC,
-        service ASC
-    `;
-
-    return rows.map((row) => ({
-      start: new Date(
-        row.start as string,
-      ),
-      group: row.group as string,
-      count: Number(row.count),
-    }));
-  }
-
-  /*
-   * GROUP BY level
-   */
-  if (filters.group_by === "level") {
-    const rows = await pg`
-      WITH progress AS (
-        SELECT
-          COALESCE(
-            (
-              SELECT last_log_id
-              FROM log_rollup_progress
-              WHERE name = '1m'
-            ),
-            0
-          )::bigint AS last_log_id
-      ),
-
-      source AS (
-        SELECT
-          bucket_start AS timestamp,
           level,
           count
-        FROM log_rollups_1m
+        FROM log_rollups_1h
         WHERE
-          bucket_start >= ${fullMinuteStart}::timestamptz
-          AND bucket_start < ${fullMinuteEnd}::timestamptz
-
-          ${rollupServiceCondition}
-          ${rollupLevelCondition}
+          bucket_start >= ${fullHourStart}::timestamptz
+          AND bucket_start < ${fullHourEnd}::timestamptz
+          ${serviceCondition}
+          ${levelCondition}
 
         UNION ALL
+      `
+    : pg``;
 
-        SELECT
-          logs.timestamp,
-          logs.level,
-          1::bigint AS count
-        FROM logs
-        CROSS JOIN progress
-        WHERE
-          logs.timestamp >= ${since}::timestamptz
-          AND logs.timestamp < ${until}::timestamptz
+  const outsideCompleteHours = useHourRollups
+    ? pg`
+        AND (
+          bucket_start < ${fullHourStart}::timestamptz
+          OR bucket_start >= ${fullHourEnd}::timestamptz
+        )
+      `
+    : pg``;
 
-          AND (
-            logs.id > progress.last_log_id
-
-            OR logs.timestamp <
-              ${fullMinuteStart}::timestamptz
-
-            OR logs.timestamp >=
-              ${fullMinuteEnd}::timestamptz
-          )
-
-          ${rawServiceCondition}
-          ${rawLevelCondition}
-      )
-
-      SELECT
-        date_bin(
-          ${interval},
-          timestamp,
-          TIMESTAMPTZ '1970-01-01 00:00:00+00'
-        ) AS start,
-
-        level::text AS "group",
-
-        SUM(count)::bigint AS count
-
-      FROM source
-
-      GROUP BY
-        1,
-        level
-
-      ORDER BY
-        1 ASC,
-        level ASC
-    `;
-
-    return rows.map((row) => ({
-      start: new Date(
-        row.start as string,
-      ),
-      group: row.group as string,
-      count: Number(row.count),
-    }));
-  }
-
-  /*
-   * No grouping
-   */
   const rows = await pg`
-    WITH progress AS (
-      SELECT
-        COALESCE(
-          (
-            SELECT last_log_id
-            FROM log_rollup_progress
-            WHERE name = '1m'
-          ),
-          0
-        )::bigint AS last_log_id
-    ),
+    WITH source AS MATERIALIZED (
+      ${hourSource}
 
-    source AS (
       SELECT
         bucket_start AS timestamp,
+        service,
+        level,
         count
       FROM log_rollups_1m
       WHERE
         bucket_start >= ${fullMinuteStart}::timestamptz
         AND bucket_start < ${fullMinuteEnd}::timestamptz
-
-        ${rollupServiceCondition}
-        ${rollupLevelCondition}
+        ${outsideCompleteHours}
+        ${serviceCondition}
+        ${levelCondition}
 
       UNION ALL
 
       SELECT
-        logs.timestamp,
+        bucket_start AS timestamp,
+        service,
+        level,
+        count
+      FROM log_rollups_1s
+      WHERE
+        bucket_start >= ${fullSecondStart}::timestamptz
+        AND bucket_start < ${fullSecondEnd}::timestamptz
+        AND (
+          bucket_start < ${fullMinuteStart}::timestamptz
+          OR bucket_start >= ${fullMinuteEnd}::timestamptz
+        )
+        ${serviceCondition}
+        ${levelCondition}
+
+      UNION ALL
+
+      SELECT
+        timestamp,
+        service,
+        level,
         1::bigint AS count
       FROM logs
-      CROSS JOIN progress
       WHERE
-        logs.timestamp >= ${since}::timestamptz
-        AND logs.timestamp < ${until}::timestamptz
-
+        timestamp >= ${since}::timestamptz
+        AND timestamp < ${until}::timestamptz
         AND (
-          logs.id > progress.last_log_id
-
-          OR logs.timestamp <
-            ${fullMinuteStart}::timestamptz
-
-          OR logs.timestamp >=
-            ${fullMinuteEnd}::timestamptz
+          timestamp < ${fullSecondStart}::timestamptz
+          OR timestamp >= ${fullSecondEnd}::timestamptz
         )
-
-        ${rawServiceCondition}
-        ${rawLevelCondition}
+        ${serviceCondition}
+        ${levelCondition}
     )
-
     SELECT
       date_bin(
         ${interval},
         timestamp,
         TIMESTAMPTZ '1970-01-01 00:00:00+00'
       ) AS start,
-
-      NULL::text AS "group",
-
-      SUM(count)::bigint AS count
-
+      ${groupExpression} AS "group",
+      sum(count)::bigint AS count
     FROM source
-
-    GROUP BY
-      1
-
-    ORDER BY
-      1 ASC
+    GROUP BY 1 ${groupBySuffix}
+    ORDER BY 1 ASC ${orderBySuffix}
   `;
 
-  return rows.map((row) => ({
-    start: new Date(
-      row.start as string,
-    ),
-    group: null,
-    count: Number(row.count),
-  }));
+  return mapAggregateRows(rows);
 }
+
+export async function aggregateLogs(
+  filters: ParsedAggregateFilters,
+): Promise<AggregateRow[]> {
+  const requiresRawLogs =
+    (filters.q !== undefined && filters.q.length > 0) ||
+    Object.keys(filters.attributes).length > 0;
+
+  return requiresRawLogs
+    ? aggregateRawLogs(filters)
+    : aggregateRolledUpLogs(filters);
+}
+
 export async function insertLogsBatch(
   logsToInsert: Log[],
 ): Promise<void> {
@@ -666,20 +411,11 @@ export async function insertLogsBatch(
     return;
   }
 
-  const timestamps: string[] =
-    new Array(logsToInsert.length);
-
-  const levels: string[] =
-    new Array(logsToInsert.length);
-
-  const services: string[] =
-    new Array(logsToInsert.length);
-
-  const messages: string[] =
-    new Array(logsToInsert.length);
-
-  const attributes: string[] =
-    new Array(logsToInsert.length);
+  const timestamps = new Array<string>(logsToInsert.length);
+  const levels = new Array<string>(logsToInsert.length);
+  const services = new Array<string>(logsToInsert.length);
+  const messages = new Array<string>(logsToInsert.length);
+  const attributes = new Array<string>(logsToInsert.length);
 
   for (
     let index = 0;
@@ -688,50 +424,137 @@ export async function insertLogsBatch(
   ) {
     const log = logsToInsert[index]!;
 
-    timestamps[index] =
-      log.timestamp.toISOString();
-
-    levels[index] =
-      log.level;
-
-    services[index] =
-      log.service;
-
-    messages[index] =
-      log.message;
-
-    attributes[index] =
-      JSON.stringify(
-        log.attributes ?? {},
-      );
+    timestamps[index] = log.timestamp.toISOString();
+    levels[index] = log.level;
+    services[index] = log.service;
+    messages[index] = log.message;
+    attributes[index] = JSON.stringify(log.attributes ?? {});
   }
 
-  await pg`
-    INSERT INTO logs (
-      timestamp,
-      level,
+  /*
+   * One statement and one commit persist both the raw logs and their
+   * second/minute/hour counts. UNNEST avoids thousands of SQL parameters,
+   * while aggregating each batch keeps rollup updates small.
+   */
+  await writePg`
+    WITH inserted AS MATERIALIZED (
+      INSERT INTO logs (
+        timestamp,
+        level,
+        service,
+        message,
+        attributes
+      )
+      SELECT
+        timestamp,
+        level,
+        service,
+        message,
+        attributes
+      FROM unnest(
+        ${writePg.array(timestamps)}::timestamptz[],
+        ${writePg.array(levels)}::log_level[],
+        ${writePg.array(services)}::text[],
+        ${writePg.array(messages)}::text[],
+        ${writePg.array(attributes)}::jsonb[]
+      ) AS input(
+        timestamp,
+        level,
+        service,
+        message,
+        attributes
+      )
+      RETURNING timestamp, service, level
+    ),
+    batch_counts_1s AS (
+      SELECT
+        date_bin(
+          INTERVAL '1 second',
+          timestamp,
+          TIMESTAMPTZ '1970-01-01 00:00:00+00'
+        ) AS bucket_start,
+        service,
+        level,
+        count(*)::bigint AS count
+      FROM inserted
+      GROUP BY 1, 2, 3
+    ),
+    upsert_1s AS (
+      INSERT INTO log_rollups_1s (
+        bucket_start,
+        service,
+        level,
+        count
+      )
+      SELECT
+        bucket_start,
+        service,
+        level,
+        count
+      FROM batch_counts_1s
+      ON CONFLICT (bucket_start, service, level)
+      DO UPDATE SET
+        count = log_rollups_1s.count + EXCLUDED.count
+      RETURNING 1
+    ),
+    batch_counts AS (
+      SELECT
+        date_bin(
+          INTERVAL '1 minute',
+          timestamp,
+          TIMESTAMPTZ '1970-01-01 00:00:00+00'
+        ) AS bucket_start,
+        service,
+        level,
+        count(*)::bigint AS count
+      FROM inserted
+      GROUP BY 1, 2, 3
+    ),
+    upsert_1m AS (
+      INSERT INTO log_rollups_1m (
+        bucket_start,
+        service,
+        level,
+        count
+      )
+      SELECT
+        bucket_start,
+        service,
+        level,
+        count
+      FROM batch_counts
+      ON CONFLICT (bucket_start, service, level)
+      DO UPDATE SET
+        count = log_rollups_1m.count + EXCLUDED.count
+      RETURNING 1
+    ),
+    batch_counts_1h AS (
+      SELECT
+        date_bin(
+          INTERVAL '1 hour',
+          timestamp,
+          TIMESTAMPTZ '1970-01-01 00:00:00+00'
+        ) AS bucket_start,
+        service,
+        level,
+        count(*)::bigint AS count
+      FROM inserted
+      GROUP BY 1, 2, 3
+    )
+    INSERT INTO log_rollups_1h (
+      bucket_start,
       service,
-      message,
-      attributes
+      level,
+      count
     )
     SELECT
-      timestamp,
-      level,
+      bucket_start,
       service,
-      message,
-      attributes
-    FROM unnest(
-      ${pg.array(timestamps)}::timestamptz[],
-      ${pg.array(levels)}::log_level[],
-      ${pg.array(services)}::text[],
-      ${pg.array(messages)}::text[],
-      ${pg.array(attributes)}::jsonb[]
-    ) AS input(
-      timestamp,
       level,
-      service,
-      message,
-      attributes
-    )
+      count
+    FROM batch_counts_1h
+    ON CONFLICT (bucket_start, service, level)
+    DO UPDATE SET
+      count = log_rollups_1h.count + EXCLUDED.count
   `;
 }

@@ -1,23 +1,45 @@
 import {AggregateFilters, validateLogsFilters, validLogs} from "./logs.validation.js";
-import {aggregateLogs, insertLogsBatch, queryLogs} from "./logs.repository.js";
-import {LogsError, type LogsFilters, type ParsedAggregateFilters, type ParsedLogsFilters, type ValidateLogsResult} from "./logs.type.js";
+import {aggregateLogs, queryLogs} from "./logs.repository.js";
+import {LogsError, type ParsedLogsFilters, type ValidateLogsResult} from "./logs.type.js";
 import { encodeLogsCursor } from "./logs.utilities.js";
-import { enqueueLogs } from "./logs.write-queue.ts";
+import { enqueueLogs, LogsQueueFullError } from "./logs.write-queue.js";
 
-export async function insertLogs(logs: unknown) : Promise<ValidateLogsResult> {
-    const result : ValidateLogsResult = await validLogs(logs);
-    if (result.valid.length > 0) {
-      try {
-        await enqueueLogs(result.valid);
-      } catch {
-        throw new LogsError(
-          "LOGS_DATABASE_ERROR",
-          500,
-          "Failed to persist logs",
-        );
-      }
-    }
+export async function insertLogs(
+  logs: unknown,
+): Promise<ValidateLogsResult> {
+  const result = validLogs(logs);
+
+  /*
+   * Nothing valid can be enqueued.
+   * The controller should return HTTP 400.
+   */
+  if (result.valid.length === 0) {
     return result;
+  }
+
+  try {
+    /*
+     * enqueueLogs is synchronous and returns as soon
+     * as the logs enter the in-memory queue.
+     */
+    enqueueLogs(result.valid);
+  } catch (error: unknown) {
+    if (error instanceof LogsQueueFullError) {
+      throw new LogsError(
+        "LOGS_QUEUE_FULL",
+        503,
+        "Log ingestion queue is full",
+      );
+    }
+
+    throw error;
+  }
+
+  /*
+   * The controller can now return HTTP 200 without
+   * waiting for PostgreSQL.
+   */
+  return result;
 }
 
 export async function getLogs(filters: unknown){

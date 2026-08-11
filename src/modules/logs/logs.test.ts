@@ -126,6 +126,38 @@ function findAggregateBucket(
   );
 }
 
+async function waitForStoredLogs(
+  query: Record<string, string | number>,
+  expectedCount: number,
+  timeoutMs = 20_000,
+): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+
+  while (Date.now() < deadline) {
+    const response = await request(BASE_URL)
+      .get("/logs")
+      .query({
+        ...query,
+        limit: 1000,
+      });
+
+    if (
+      response.status === 200 &&
+      response.body.logs?.length === expectedCount
+    ) {
+      return;
+    }
+
+    await new Promise((resolve) => {
+      setTimeout(resolve, 50);
+    });
+  }
+
+  throw new Error(
+    `Timed out waiting for ${expectedCount} stored logs`,
+  );
+}
+
 describe("POST /logs", () => {
   // 1
   it("accepts a batch containing one valid log", async () => {
@@ -632,6 +664,16 @@ describe("GET /logs", () => {
     expect(response.status).toBe(200);
     expect(response.body.accepted).toBe(125);
     expect(response.body.rejected).toEqual([]);
+
+    await waitForStoredLogs(
+      { service: queryService },
+      seededLogs.length,
+    );
+
+    await waitForStoredLogs(
+      { service: tieService },
+      tieLogs.length,
+    );
   });
 
   // 9
@@ -1324,6 +1366,60 @@ describe("GET /logs/aggregate", () => {
       aggregateLogsFixture.length,
     );
     expect(response.body.rejected).toEqual([]);
+
+    await waitForStoredLogs(
+      { "attr.aggregate_run_id": runId },
+      aggregateLogsFixture.length,
+    );
+  });
+
+  it("uses hierarchical rollups for exact partial-second boundaries", async () => {
+    const response = await request(BASE_URL)
+      .get("/logs/aggregate")
+      .query({
+        since: at(500),
+        until: at(20_500),
+        bucket: "1m",
+        service: checkoutService,
+      });
+
+    expect(response.status).toBe(200);
+    expect(
+      (response.body as AggregateResponse).buckets,
+    ).toEqual([
+      {
+        start: at(0),
+        group: null,
+        count: 1,
+      },
+    ]);
+  });
+
+  it("uses hour rollups for long-range hourly aggregation", async () => {
+    const response = await request(BASE_URL)
+      .get("/logs/aggregate")
+      .query({
+        since: at(0),
+        until: at(2 * hour),
+        bucket: "1h",
+        service: checkoutService,
+      });
+
+    expect(response.status).toBe(200);
+    expect(
+      (response.body as AggregateResponse).buckets,
+    ).toEqual([
+      {
+        start: at(0),
+        group: null,
+        count: 7,
+      },
+      {
+        start: at(hour),
+        group: null,
+        count: 1,
+      },
+    ]);
   });
 
   // 21

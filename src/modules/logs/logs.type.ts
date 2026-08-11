@@ -73,7 +73,8 @@ export type LogsErrorCode =
   | "INVALID_REQUEST_BODY"
   | "LOGS_DATABASE_ERROR"
   | "UNSUPPORTED_MEDIA_TYPE"
-  | "INVALID_QUERY_PARAMETERS";
+  | "INVALID_QUERY_PARAMETERS"
+  |  "LOGS_QUEUE_FULL";
 
 export class LogsError extends Error {
   public readonly code: LogsErrorCode;

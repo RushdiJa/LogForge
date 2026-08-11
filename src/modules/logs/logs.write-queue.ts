@@ -1,12 +1,23 @@
 import type { Log } from "./logs.type.js";
 
-const MAX_QUEUED_LOGS = 50_000;
+/*
+ * Approximately 10 seconds of logs at 15,000 logs/s.
+ *
+ * This protects the application from consuming too much
+ * memory when PostgreSQL cannot keep up.
+ */
+const MAX_QUEUED_LOGS = 150_000;
 
 export type WriteQueueItem = {
   logs: Log[];
-  resolve: () => void;
-  reject: (error: unknown) => void;
 };
+
+export class LogsQueueFullError extends Error {
+  constructor() {
+    super("Log write queue is full");
+    this.name = "LogsQueueFullError";
+  }
+}
 
 const queue: WriteQueueItem[] = [];
 
@@ -15,38 +26,30 @@ let queuedLogsCount = 0;
 /**
  * Adds logs to the write queue.
  *
- * The returned promise is resolved only after
- * the worker successfully persists these logs.
+ * This function returns immediately after the logs
+ * are successfully added to the in-memory queue.
  *
- * It is rejected if persistence fails.
+ * It does not wait for PostgreSQL persistence.
  */
 export function enqueueLogs(
   logs: Log[],
-): Promise<void> {
+): void {
   if (logs.length === 0) {
-    return Promise.resolve();
+    return;
   }
 
   if (
     queuedLogsCount + logs.length >
     MAX_QUEUED_LOGS
-  ) { 
-    return Promise.reject(
-      new Error("Log write queue is full"),
-    );
+  ) {
+    throw new LogsQueueFullError();
   }
 
-  return new Promise<void>(
-    (resolve, reject) => {
-      queue.push({
-        logs,
-        resolve,
-        reject,
-      });
+  queue.push({
+    logs,
+  });
 
-      queuedLogsCount += logs.length;
-    },
-  );
+  queuedLogsCount += logs.length;
 }
 
 /**
@@ -68,8 +71,8 @@ export function peekQueueItems(
 
   for (const item of queue) {
     /*
-     * If this is not the first item and adding
-     * it would exceed maxLogs, stop here.
+     * If this is not the first item and adding it
+     * would exceed maxLogs, stop collecting items.
      */
     if (
       items.length > 0 &&
@@ -79,8 +82,8 @@ export function peekQueueItems(
     }
 
     /*
-     * Allow a single request larger than maxLogs
-     * to pass alone rather than blocking the queue.
+     * Allow one request larger than maxLogs to pass
+     * alone, preventing it from blocking the queue.
      */
     items.push(item);
 
@@ -96,33 +99,12 @@ export function peekQueueItems(
 
 /**
  * Removes successfully persisted items
- * from the front of the queue and resolves
- * their waiting promises.
+ * from the front of the queue.
  */
 export function completeQueueItems(
   items: readonly WriteQueueItem[],
 ): void {
   removeQueueItems(items);
-
-  for (const item of items) {
-    item.resolve();
-  }
-}
-
-/**
- * Removes permanently failed items
- * from the queue and rejects their
- * waiting promises.
- */
-export function failQueueItems(
-  items: readonly WriteQueueItem[],
-  error: unknown,
-): void {
-  removeQueueItems(items);
-
-  for (const item of items) {
-    item.reject(error);
-  }
 }
 
 export function getQueuedLogsCount(): number {
@@ -133,6 +115,12 @@ export function getQueueItemsCount(): number {
   return queue.length;
 }
 
+/**
+ * Removes items from the front of the queue.
+ *
+ * This must only be called after PostgreSQL
+ * successfully persists the corresponding logs.
+ */
 function removeQueueItems(
   items: readonly WriteQueueItem[],
 ): void {
@@ -141,12 +129,8 @@ function removeQueueItems(
   }
 
   /*
-   * The worker always works on the front
-   * of the queue.
-   *
-   * Check that the items being removed
-   * are actually the same items currently
-   * at the front.
+   * Verify that the worker is removing the exact
+   * items currently located at the queue front.
    */
   for (
     let index = 0;

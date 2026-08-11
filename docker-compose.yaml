@@ -45,17 +45,31 @@ services:
       - -c
       - effective_cache_size=768MB
       - -c
-      - work_mem=4MB
+      - work_mem=8MB
       - -c
-      - checkpoint_timeout=15min
+      - maintenance_work_mem=128MB
       - -c
-      - max_wal_size=2GB
+      - wal_buffers=16MB
+      - -c
+      - wal_compression=on
+      - -c
+      - checkpoint_timeout=30min
+      - -c
+      - min_wal_size=1GB
+      - -c
+      - max_wal_size=4GB
       - -c
       - checkpoint_completion_target=0.9
       - -c
-      - bgwriter_lru_maxpages=300
+      - bgwriter_lru_maxpages=500
       - -c
       - bgwriter_lru_multiplier=3.0
+      - -c
+      - random_page_cost=1.1
+      - -c
+      - effective_io_concurrency=200
+      - -c
+      - max_connections=30
       - -c
       - jit=off
 

@@ -22,6 +22,27 @@
       "when": 1786412445398,
       "tag": "0002_aromatic_hammerhead",
       "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "7",
+      "when": 1786482054823,
+      "tag": "0003_curvy_lockheed",
+      "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "7",
+      "when": 1786490248036,
+      "tag": "0004_striped_queen_noir",
+      "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "7",
+      "when": 1786491827274,
+      "tag": "0005_past_magma",
+      "breakpoints": true
     }
   ]
 }

@@ -2,7 +2,6 @@ import { insertLogsBatch } from "./logs.repository.js";
 
 import {
   completeQueueItems,
-  failQueueItems,
   getQueuedLogsCount,
   peekQueueItems,
   type WriteQueueItem,
@@ -10,11 +9,24 @@ import {
 
 import type { Log } from "./logs.type.js";
 
-const FLUSH_INTERVAL_MS = 100;
+/*
+ * A short batching window amortizes PostgreSQL commit and index
+ * maintenance costs. At 15k logs/s this normally produces batches
+ * of roughly 3k logs while staying far below the visibility target.
+ */
+const FLUSH_INTERVAL_MS = 200;
 
-const MAX_LOGS_PER_CYCLE = 12_000;
+/*
+ * Maximum number of logs processed during
+ * a single worker cycle.
+ */
+const MAX_LOGS_PER_CYCLE = 50_000;
 
-const MAX_LOGS_PER_INSERT = 3_000;
+/*
+ * Maximum number of logs sent to PostgreSQL
+ * in one INSERT operation.
+ */
+const MAX_LOGS_PER_INSERT = 5_000;
 
 const MAX_INSERT_ATTEMPTS = 2;
 
@@ -24,6 +36,9 @@ let workerTimer: NodeJS.Timeout | undefined;
 
 let flushing = false;
 
+/**
+ * Starts the background logs write worker.
+ */
 export function startLogsWriteWorker(): void {
   if (workerTimer !== undefined) {
     return;
@@ -34,6 +49,12 @@ export function startLogsWriteWorker(): void {
   }, FLUSH_INTERVAL_MS);
 }
 
+/**
+ * Stops scheduling new worker cycles.
+ *
+ * If a flush is currently running, this function
+ * does not cancel the active database operation.
+ */
 export function stopLogsWriteWorker(): void {
   if (workerTimer === undefined) {
     return;
@@ -44,10 +65,46 @@ export function stopLogsWriteWorker(): void {
   workerTimer = undefined;
 }
 
+/**
+ * Flushes accepted in-memory logs during a graceful shutdown.
+ * Returns false when PostgreSQL could not drain the queue before
+ * the deadline, allowing the caller to report the data-loss risk.
+ */
+export async function drainLogsQueue(
+  timeoutMs = 15_000,
+): Promise<boolean> {
+  const deadline = Date.now() + timeoutMs;
+
+  while (getQueuedLogsCount() > 0) {
+    if (Date.now() >= deadline) {
+      return false;
+    }
+
+    if (flushing) {
+      await delay(10);
+      continue;
+    }
+
+    await flushLogsQueue();
+
+    if (getQueuedLogsCount() > 0) {
+      await delay(25);
+    }
+  }
+
+  return true;
+}
+
+/**
+ * Writes queued logs to PostgreSQL.
+ *
+ * Queue items are removed only after PostgreSQL
+ * successfully persists them.
+ */
 export async function flushLogsQueue(): Promise<void> {
   /*
-   * Prevent two worker executions from flushing
-   * the queue at the same time.
+   * Prevent multiple worker cycles from writing
+   * the same queue items concurrently.
    */
   if (flushing) {
     return;
@@ -75,11 +132,10 @@ export async function flushLogsQueue(): Promise<void> {
       );
 
       /*
-       * Important:
-       * peek only.
+       * Peek at the queue without removing anything.
        *
-       * Nothing is removed from the queue
-       * before PostgreSQL succeeds.
+       * The items remain in the queue until the
+       * database insert succeeds.
        */
       const items = peekQueueItems(batchLimit);
 
@@ -89,28 +145,33 @@ export async function flushLogsQueue(): Promise<void> {
 
       const logs = collectLogs(items);
 
-      const result =
-        await insertBatchWithRetry(logs);
+      const result = await insertBatchWithRetry(logs);
 
-      if (result.success) {
-        completeQueueItems(items);
-      } else {
+      if (!result.success) {
         /*
-         * Three attempts failed.
+         * The HTTP request has already received a
+         * successful response after enqueueing.
          *
-         * Remove the items and reject the
-         * HTTP requests waiting for them.
+         * Keep these logs at the front of the queue
+         * so the next worker cycle retries them.
          */
-        failQueueItems(
-          items,
-          result.error,
-        );
-
         console.error(
           `Failed to persist ${logs.length} logs after ${MAX_INSERT_ATTEMPTS} attempts`,
           result.error,
         );
+
+        /*
+         * Stop this cycle to avoid immediately retrying
+         * the same failed batch in a tight loop.
+         */
+        break;
       }
+
+      /*
+       * PostgreSQL successfully persisted the logs,
+       * so they can now be removed from the queue.
+       */
+      completeQueueItems(items);
 
       processedLogs += logs.length;
     }
@@ -128,6 +189,10 @@ type InsertResult =
       error: unknown;
     };
 
+/**
+ * Attempts to persist one batch, retrying temporary
+ * database failures a limited number of times.
+ */
 async function insertBatchWithRetry(
   logs: Log[],
 ): Promise<InsertResult> {
@@ -147,13 +212,8 @@ async function insertBatchWithRetry(
     } catch (error: unknown) {
       lastError = error;
 
-      if (
-        attempt <
-        MAX_INSERT_ATTEMPTS
-      ) {
-        await delay(
-          RETRY_DELAY_MS * attempt,
-        );
+      if (attempt < MAX_INSERT_ATTEMPTS) {
+        await delay(RETRY_DELAY_MS * attempt);
       }
     }
   }
@@ -164,6 +224,10 @@ async function insertBatchWithRetry(
   };
 }
 
+/**
+ * Combines the logs from multiple queue items
+ * into one database insert batch.
+ */
 function collectLogs(
   items: readonly WriteQueueItem[],
 ): Log[] {
@@ -180,9 +244,6 @@ function delay(
   milliseconds: number,
 ): Promise<void> {
   return new Promise((resolve) => {
-    setTimeout(
-      resolve,
-      milliseconds,
-    );
+    setTimeout(resolve, milliseconds);
   });
 }

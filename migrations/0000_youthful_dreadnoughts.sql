@@ -8,23 +8,9 @@ CREATE TABLE "logs" (
 	"attributes" jsonb DEFAULT '{}'::jsonb NOT NULL,
 	"ingested_at" timestamp (3) with time zone DEFAULT now() NOT NULL
 );
---> statement-breakpoint
+
 CREATE INDEX "logs_timestamp_id_idx"
-ON "logs" USING btree (
-    "timestamp" DESC,
-    "id" DESC
-);
+ON "logs" ("timestamp" DESC, "id" DESC);
 
 CREATE INDEX "logs_service_timestamp_id_idx"
-ON "logs" USING btree (
-    "service",
-    "timestamp" DESC,
-    "id" DESC
-);
-
-CREATE INDEX "logs_level_timestamp_id_idx"
-ON "logs" USING btree (
-    "level",
-    "timestamp" DESC,
-    "id" DESC
-);
+ON "logs" ("service", "timestamp" DESC, "id" DESC);
