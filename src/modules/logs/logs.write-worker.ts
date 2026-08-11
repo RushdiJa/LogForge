@@ -10,15 +10,15 @@ import {
 
 import type { Log } from "./logs.type.js";
 
-const FLUSH_INTERVAL_MS = 150;
+const FLUSH_INTERVAL_MS = 100;
 
-const MAX_LOGS_PER_CYCLE = 10_000;
+const MAX_LOGS_PER_CYCLE = 12_000;
 
-const MAX_LOGS_PER_INSERT = 2_000;
+const MAX_LOGS_PER_INSERT = 3_000;
 
 const MAX_INSERT_ATTEMPTS = 2;
 
-const RETRY_DELAY_MS = 50;
+const RETRY_DELAY_MS = 5;
 
 let workerTimer: NodeJS.Timeout | undefined;
 
