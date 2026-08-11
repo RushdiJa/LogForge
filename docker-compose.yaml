@@ -43,7 +43,21 @@ services:
       - -c
       - shared_buffers=256MB
       - -c
-      - work_mem=8MB
+      - effective_cache_size=768MB
+      - -c
+      - work_mem=4MB
+      - -c
+      - checkpoint_timeout=15min
+      - -c
+      - max_wal_size=2GB
+      - -c
+      - checkpoint_completion_target=0.9
+      - -c
+      - bgwriter_lru_maxpages=300
+      - -c
+      - bgwriter_lru_multiplier=3.0
+      - -c
+      - jit=off
 
     cpus: 1.0
     mem_limit: 1g
