@@ -1,1 +1,1 @@
-DROP INDEX "logs_level_idx";
+-- DROP INDEX "logs_level_idx";
