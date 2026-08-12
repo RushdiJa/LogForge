@@ -1,0 +1,55 @@
+import { QueueUnavailableError } from "./logs.error.js";
+import { LogsRepository } from "./logs.repository.js";
+import type {
+  IngestionMetrics,
+  IngestResult,
+  LogPage,
+  QueuePublisher,
+} from "./logs.type.js";
+import { encodeCursor, validateIngestRequest, validateLogQuery } from "./logs.validate.js";
+
+export class LogsService {
+  constructor(
+    private readonly repository: LogsRepository,
+    private readonly publisher: QueuePublisher,
+    private readonly metrics?: IngestionMetrics,
+  ) {}
+
+  async ingest(body: unknown): Promise<IngestResult> {
+    const validationStartedAt = this.metrics === undefined ? 0 : performance.now();
+    const { valid, rejected } = validateIngestRequest(body);
+    if (this.metrics !== undefined) {
+      this.metrics.recordValidation(
+        performance.now() - validationStartedAt,
+        valid.length,
+        rejected.length,
+      );
+    }
+
+    if (valid.length > 0) {
+      try {
+        await this.publisher.publish(valid);
+      } catch {
+        throw new QueueUnavailableError();
+      }
+    }
+
+    return { accepted: valid.length, rejected };
+  }
+
+  async query(rawQuery: unknown): Promise<LogPage> {
+    const query = validateLogQuery(rawQuery);
+    const rows = await this.repository.find(query);
+    const hasMore = rows.length > query.limit;
+    const logs = hasMore ? rows.slice(0, query.limit) : rows;
+    const last = logs.at(-1);
+
+    return {
+      logs,
+      next_cursor:
+        hasMore && last !== undefined
+          ? encodeCursor({ timestamp: last.timestamp, id: last.id })
+          : null,
+    };
+  }
+}

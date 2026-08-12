@@ -1,0 +1,63 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: TypeScript and Vitest
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm test
+      - run: npm run build
+
+  benchmark:
+    name: 30k logs/sec benchmark
+    needs: test
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Start constrained application
+        run: LOG_LEVEL=info QUEUE_METRICS_INTERVAL_MS=10000 docker compose up -d --build
+      - name: Wait for readiness
+        run: |
+          for attempt in $(seq 1 90); do
+            if curl --fail --silent http://127.0.0.1:8080/health >/dev/null; then
+              exit 0
+            fi
+            sleep 2
+          done
+          docker compose logs
+          exit 1
+      - name: Run k6 benchmark
+        run: |
+          docker run --rm --network host \
+            -e BASE_URL=http://127.0.0.1:8080 \
+            -e TARGET_LPS=30000 \
+            -e DURATION=120s \
+            -v "$PWD/benchmark:/scripts:ro" \
+            grafana/k6:latest run /scripts/load.js
+      - name: Show service logs on failure
+        if: failure()
+        run: docker compose logs --tail=500
+      - name: Stop application
+        if: always()
+        run: docker compose down -v

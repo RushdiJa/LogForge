@@ -1,0 +1,7 @@
+node_modules/
+dist/
+.env
+coverage/
+benchmark-results/
+benchmark-summary.json
+*.log
