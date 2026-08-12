@@ -160,5 +160,8 @@ describe("LogsRepository", () => {
         attributes: {},
       },
     ]);
+    expect(unsafe.mock.calls[0]?.[0]).toContain(
+      "ORDER BY timestamp DESC NULLS LAST, id DESC NULLS LAST",
+    );
   });
 });

@@ -129,7 +129,7 @@ export class LogsRepository {
       `SELECT id::text, timestamp, level, service, message, attributes
        FROM logs l
        WHERE ${where.text}
-       ORDER BY timestamp DESC, id DESC
+       ORDER BY timestamp DESC NULLS LAST, id DESC NULLS LAST
        LIMIT ${limitParameter}`,
       where.parameters,
     );

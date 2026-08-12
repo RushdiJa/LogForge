@@ -127,8 +127,23 @@ describe("internal queue message validation", () => {
 describe("queue metrics", () => {
   it("reports end-to-end counters and local queue state", () => {
     const metrics = new QueueMetrics();
+    const request = {};
+    metrics.recordHttpRequestStarted(request);
+    metrics.recordHttpBodyParsed(request);
+    metrics.recordHttpRequestCompleted(request);
+    metrics.recordConnectionBlocked();
+    metrics.recordConnectionUnblocked();
+    metrics.recordValidation(3, 500, 0);
+    metrics.recordPublishSerialization(2);
+    metrics.recordPublishedPayload(100_000);
+    metrics.recordPublishCall(1);
+    metrics.recordPublisherBackpressureWait(4);
+    metrics.recordPublishStarted();
+    metrics.recordPublishConfirmation(5, true);
     metrics.recordPublished(500);
     metrics.recordConsumed(500);
+    metrics.recordConsumerParsing(2);
+    metrics.recordDeliveredMessageAge(125);
     metrics.recordInserted(500, 25, 750);
     metrics.recordAcknowledged(1);
 
@@ -143,6 +158,21 @@ describe("queue metrics", () => {
       latestInsertDurationMs: 25,
       latestInsertLogsPerSecond: 20_000,
       maximumQueueToDatabaseLagMs: 750,
+      averageConsumerParseMs: 2,
+      latestDeliveredMessageAgeMs: 125,
+      maximumDeliveredMessageAgeMs: 125,
+      maximumOutstandingHttpHandlers: 1,
+      outstandingHttpHandlers: 0,
+      connectionBlockedEvents: 1,
+      connectionUnblockedEvents: 1,
+      averagePublishedPayloadBytes: 100_000,
+      validationCount: 1,
+      serializationCount: 1,
+      publishCallCount: 1,
+      backpressureWaitCount: 1,
+      publisherConfirmCount: 1,
+      jsonParsingCount: 1,
+      totalHttpRequestCount: 1,
     });
   });
 });

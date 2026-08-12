@@ -60,5 +60,8 @@ export interface QueuePublisher {
 }
 
 export interface IngestionMetrics {
+  recordHttpRequestStarted(request: object): void;
+  recordHttpBodyParsed(request: object): void;
+  recordHttpRequestCompleted(request: object): void;
   recordValidation(durationMs: number, acceptedLogs: number, rejectedLogs: number): void;
 }

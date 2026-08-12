@@ -71,8 +71,17 @@ async function shutdown(signal: string): Promise<void> {
 async function start(): Promise<void> {
   await database`SELECT 1`;
   await applyMigrations(database);
-  await queueRepository.connect(config.rabbitMqUrl, () => readiness.markNotReady());
-  await queueConsumer.start();
+  const queueChannels = await queueRepository.connect(
+    config.rabbitMqUrl,
+    () => readiness.markNotReady(),
+  );
+  queueChannels.connection.on("blocked", () => queueMetrics?.recordConnectionBlocked());
+  queueChannels.connection.on("unblocked", () => queueMetrics?.recordConnectionUnblocked());
+  if (config.queueConsumerEnabled) {
+    await queueConsumer.start();
+  } else {
+    app.log.warn("Queue consumer disabled for publisher-path diagnostics");
+  }
   queueMetricsReporter?.start();
   await app.listen({ host: "0.0.0.0", port: config.port });
   retention.start();

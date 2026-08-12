@@ -23,6 +23,7 @@ export class QueuePublisher implements QueuePublisherContract {
       const content = Buffer.from(JSON.stringify({ logs: batch }));
       if (this.metrics !== undefined) {
         this.metrics.recordPublishSerialization(performance.now() - serializationStartedAt);
+        this.metrics.recordPublishedPayload(content.length);
       }
       let writable = true;
       const confirmationStartedAt = this.metrics === undefined ? 0 : performance.now();
@@ -30,6 +31,7 @@ export class QueuePublisher implements QueuePublisherContract {
 
       const confirmation = new Promise<void>((resolve, reject) => {
         try {
+          const publishCallStartedAt = this.metrics === undefined ? 0 : performance.now();
           writable = channel.sendToQueue(
             INGEST_QUEUE,
             content,
@@ -52,6 +54,7 @@ export class QueuePublisher implements QueuePublisherContract {
               }
             },
           );
+          this.metrics?.recordPublishCall(performance.now() - publishCallStartedAt);
         } catch (error) {
           this.metrics?.recordPublishConfirmation(
             performance.now() - confirmationStartedAt,
@@ -64,7 +67,11 @@ export class QueuePublisher implements QueuePublisherContract {
 
       if (!writable) {
         this.metrics?.recordPublisherBackpressure();
+        const backpressureStartedAt = this.metrics === undefined ? 0 : performance.now();
         await Promise.race([once(channel, "drain"), confirmation]);
+        this.metrics?.recordPublisherBackpressureWait(
+          performance.now() - backpressureStartedAt,
+        );
       }
     }
 

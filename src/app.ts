@@ -35,6 +35,33 @@ export function createApp(dependencies: AppDependencies): FastifyInstance {
     logController: new LogController({ disableRequestLogging: true }),
   });
 
+  if (dependencies.ingestionMetrics !== undefined) {
+    app.addHook("onRequest", (request, _reply, done) => {
+      if (request.method === "POST" && request.url === "/logs") {
+        dependencies.ingestionMetrics?.recordHttpRequestStarted(request);
+      }
+      done();
+    });
+    app.addHook("preValidation", (request, _reply, done) => {
+      if (request.method === "POST" && request.url === "/logs") {
+        dependencies.ingestionMetrics?.recordHttpBodyParsed(request);
+      }
+      done();
+    });
+    app.addHook("onResponse", (request, _reply, done) => {
+      if (request.method === "POST" && request.url === "/logs") {
+        dependencies.ingestionMetrics?.recordHttpRequestCompleted(request);
+      }
+      done();
+    });
+    app.addHook("onRequestAbort", (request, done) => {
+      if (request.method === "POST" && request.url === "/logs") {
+        dependencies.ingestionMetrics?.recordHttpRequestCompleted(request);
+      }
+      done();
+    });
+  }
+
   registerErrorHandler(app);
 
   const logsRepository = new LogsRepository(dependencies.database);

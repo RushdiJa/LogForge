@@ -7,6 +7,7 @@ export interface AppConfig {
   queueFlushIntervalMs: number;
   queueMaxBatchLogs: number;
   queueMetricsIntervalMs: number;
+  queueConsumerEnabled: boolean;
 }
 
 function integer(name: string, fallback: number, minimum: number, maximum: number): number {
@@ -20,6 +21,20 @@ function integer(name: string, fallback: number, minimum: number, maximum: numbe
   return value;
 }
 
+function boolean(name: string, fallback: boolean): boolean {
+  const raw = process.env[name];
+  if (raw === undefined) {
+    return fallback;
+  }
+  if (raw === "true") {
+    return true;
+  }
+  if (raw === "false") {
+    return false;
+  }
+  throw new Error(`${name} must be true or false`);
+}
+
 export function loadConfig(): AppConfig {
   return {
     port: integer("PORT", 8080, 1, 65_535),
@@ -31,5 +46,6 @@ export function loadConfig(): AppConfig {
     queueFlushIntervalMs: integer("QUEUE_FLUSH_INTERVAL_MS", 250, 5, 1_000),
     queueMaxBatchLogs: integer("QUEUE_MAX_BATCH_LOGS", 5_000, 100, 20_000),
     queueMetricsIntervalMs: integer("QUEUE_METRICS_INTERVAL_MS", 0, 0, 60_000),
+    queueConsumerEnabled: boolean("QUEUE_CONSUMER_ENABLED", true),
   };
 }

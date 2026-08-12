@@ -64,7 +64,15 @@ export class QueueConsumerService {
       return;
     }
 
+    const parsingStartedAt = this.metrics === undefined ? 0 : performance.now();
     const logs = parseQueuedLogs(message.content);
+    if (this.metrics !== undefined) {
+      this.metrics.recordConsumerParsing(performance.now() - parsingStartedAt);
+      const publishedAtMs = (message.properties.timestamp ?? 0) * 1_000;
+      if (publishedAtMs > 0) {
+        this.metrics.recordDeliveredMessageAge(Date.now() - publishedAtMs);
+      }
+    }
     if (logs === null) {
       this.logger.error("Discarding an invalid internal queue message");
       this.metrics?.recordInvalidMessage();

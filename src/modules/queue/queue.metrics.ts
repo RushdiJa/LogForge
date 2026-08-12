@@ -3,6 +3,66 @@ import { monitorEventLoopDelay, type IntervalHistogram } from "node:perf_hooks";
 
 import type { QueueRepository } from "./queue.repository.js";
 
+const STAGE_SAMPLE_EVERY = 8;
+const MAX_STAGE_SAMPLES = 4_096;
+
+class SampledStage {
+  private seen = 0;
+  private total = 0;
+  private maximum = 0;
+  private readonly samples: number[] = [];
+
+  record(value: number): void {
+    this.seen += 1;
+    this.total += value;
+    this.maximum = Math.max(this.maximum, value);
+    if (
+      (this.seen - 1) % STAGE_SAMPLE_EVERY === 0 &&
+      this.samples.length < MAX_STAGE_SAMPLES
+    ) {
+      this.samples.push(value);
+    }
+  }
+
+  snapshot(name: string): Record<string, number> {
+    if (this.seen === 0) {
+      return {
+        [`${name}Count`]: 0,
+        [`${name}SampleCount`]: 0,
+        [`${name}AverageMs`]: 0,
+        [`${name}P50Ms`]: 0,
+        [`${name}P95Ms`]: 0,
+        [`${name}P99Ms`]: 0,
+        [`${name}MaxMs`]: 0,
+      };
+    }
+
+    const sorted = this.samples.toSorted((left, right) => left - right);
+    const percentile = (fraction: number): number => {
+      const index = Math.min(
+        sorted.length - 1,
+        Math.ceil(sorted.length * fraction) - 1,
+      );
+      return sorted[Math.max(0, index)] ?? 0;
+    };
+    const rounded = (value: number): number => Math.round(value * 100) / 100;
+
+    return {
+      [`${name}Count`]: this.seen,
+      [`${name}SampleCount`]: sorted.length,
+      [`${name}AverageMs`]: rounded(this.total / this.seen),
+      [`${name}P50Ms`]: rounded(percentile(0.5)),
+      [`${name}P95Ms`]: rounded(percentile(0.95)),
+      [`${name}P99Ms`]: rounded(percentile(0.99)),
+      [`${name}MaxMs`]: rounded(this.maximum),
+    };
+  }
+}
+
+interface RequestTiming {
+  startedAt: number;
+}
+
 export class QueueMetrics {
   private publishedLogs = 0;
   private publishedMessages = 0;
@@ -31,10 +91,61 @@ export class QueueMetrics {
   private publisherBackpressureEvents = 0;
   private batchPreparationDurationMs = 0;
   private preparedBatches = 0;
+  private consumerParseDurationMs = 0;
+  private consumerParsedMessages = 0;
+  private latestDeliveredMessageAgeMs = 0;
+  private maximumDeliveredMessageAgeMs = 0;
+  private readonly requestTimings = new WeakMap<object, RequestTiming>();
+  private outstandingHttpHandlers = 0;
+  private maximumOutstandingHttpHandlers = 0;
+  private connectionBlockedEvents = 0;
+  private connectionUnblockedEvents = 0;
+  private publishedPayloadBytes = 0;
+  private maximumPublishedPayloadBytes = 0;
+  private readonly jsonParsing = new SampledStage();
+  private readonly validation = new SampledStage();
+  private readonly serialization = new SampledStage();
+  private readonly publishCall = new SampledStage();
+  private readonly backpressureWait = new SampledStage();
+  private readonly publisherConfirm = new SampledStage();
+  private readonly totalHttpRequest = new SampledStage();
   private snapshotAt = Date.now();
   private snapshotPublishedLogs = 0;
   private snapshotConsumedLogs = 0;
   private snapshotInsertedLogs = 0;
+
+  recordHttpRequestStarted(request: object): void {
+    this.requestTimings.set(request, { startedAt: performance.now() });
+    this.outstandingHttpHandlers += 1;
+    this.maximumOutstandingHttpHandlers = Math.max(
+      this.maximumOutstandingHttpHandlers,
+      this.outstandingHttpHandlers,
+    );
+  }
+
+  recordHttpBodyParsed(request: object): void {
+    const timing = this.requestTimings.get(request);
+    if (timing !== undefined) {
+      this.jsonParsing.record(performance.now() - timing.startedAt);
+    }
+  }
+
+  recordHttpRequestCompleted(request: object): void {
+    const timing = this.requestTimings.get(request);
+    if (timing !== undefined) {
+      this.totalHttpRequest.record(performance.now() - timing.startedAt);
+      this.requestTimings.delete(request);
+      this.outstandingHttpHandlers = Math.max(0, this.outstandingHttpHandlers - 1);
+    }
+  }
+
+  recordConnectionBlocked(): void {
+    this.connectionBlockedEvents += 1;
+  }
+
+  recordConnectionUnblocked(): void {
+    this.connectionUnblockedEvents += 1;
+  }
 
   recordPublished(logs: number): void {
     this.publishedLogs += logs;
@@ -45,11 +156,26 @@ export class QueueMetrics {
     this.validatedLogs += acceptedLogs + rejectedLogs;
     this.rejectedLogs += rejectedLogs;
     this.validationDurationMs += durationMs;
+    this.validation.record(durationMs);
   }
 
   recordPublishSerialization(durationMs: number): void {
     this.publishSerializationDurationMs += durationMs;
     this.publishSerializationBatches += 1;
+    this.serialization.record(durationMs);
+  }
+
+  recordPublishedPayload(bytes: number): void {
+    this.publishedPayloadBytes += bytes;
+    this.maximumPublishedPayloadBytes = Math.max(this.maximumPublishedPayloadBytes, bytes);
+  }
+
+  recordPublishCall(durationMs: number): void {
+    this.publishCall.record(durationMs);
+  }
+
+  recordPublisherBackpressureWait(durationMs: number): void {
+    this.backpressureWait.record(durationMs);
   }
 
   recordPublishStarted(): void {
@@ -67,6 +193,7 @@ export class QueueMetrics {
     );
     this.publishConfirmations += 1;
     this.publishConfirmDurationMs += durationMs;
+    this.publisherConfirm.record(durationMs);
     if (!succeeded) {
       this.failedPublishConfirmations += 1;
     }
@@ -80,6 +207,19 @@ export class QueueMetrics {
     this.consumedLogs += logs;
     this.consumedMessages += 1;
     this.unacknowledgedMessages += 1;
+  }
+
+  recordConsumerParsing(durationMs: number): void {
+    this.consumerParseDurationMs += durationMs;
+    this.consumerParsedMessages += 1;
+  }
+
+  recordDeliveredMessageAge(ageMs: number): void {
+    this.latestDeliveredMessageAgeMs = ageMs;
+    this.maximumDeliveredMessageAgeMs = Math.max(
+      this.maximumDeliveredMessageAgeMs,
+      ageMs,
+    );
   }
 
   recordInvalidMessage(): void {
@@ -172,10 +312,33 @@ export class QueueMetrics {
       publisherConfirmationsInFlight: this.publisherConfirmationsInFlight,
       maximumPublisherConfirmationsInFlight: this.maximumPublisherConfirmationsInFlight,
       publisherBackpressureEvents: this.publisherBackpressureEvents,
+      outstandingHttpHandlers: this.outstandingHttpHandlers,
+      maximumOutstandingHttpHandlers: this.maximumOutstandingHttpHandlers,
+      connectionBlockedEvents: this.connectionBlockedEvents,
+      connectionUnblockedEvents: this.connectionUnblockedEvents,
+      publishedPayloadBytes: this.publishedPayloadBytes,
+      averagePublishedPayloadBytes:
+        this.publishedMessages === 0
+          ? 0
+          : Math.round(this.publishedPayloadBytes / this.publishedMessages),
+      maximumPublishedPayloadBytes: this.maximumPublishedPayloadBytes,
       averageBatchPreparationMs:
         this.preparedBatches === 0
           ? 0
           : Math.round(this.batchPreparationDurationMs / this.preparedBatches),
+      averageConsumerParseMs:
+        this.consumerParsedMessages === 0
+          ? 0
+          : Math.round(this.consumerParseDurationMs / this.consumerParsedMessages),
+      latestDeliveredMessageAgeMs: this.latestDeliveredMessageAgeMs,
+      maximumDeliveredMessageAgeMs: this.maximumDeliveredMessageAgeMs,
+      ...this.jsonParsing.snapshot("jsonParsing"),
+      ...this.validation.snapshot("validation"),
+      ...this.serialization.snapshot("serialization"),
+      ...this.publishCall.snapshot("publishCall"),
+      ...this.backpressureWait.snapshot("backpressureWait"),
+      ...this.publisherConfirm.snapshot("publisherConfirm"),
+      ...this.totalHttpRequest.snapshot("totalHttpRequest"),
       publishedLogsPerSecond: Math.round(publishedLogsPerSecond),
       consumedLogsPerSecond: Math.round(consumedLogsPerSecond),
       insertedLogsPerSecond: Math.round(insertedLogsPerSecond),

@@ -7,6 +7,15 @@ const TARGET_LPS = Number(__ENV.TARGET_LPS || 30000);
 const BATCH_SIZE = Number(__ENV.BATCH_SIZE || 500);
 const DURATION = __ENV.DURATION || "300s";
 const SERVICE_COUNT = Number(__ENV.SERVICE_COUNT || 20);
+const PUBLISHER_ONLY = (__ENV.PUBLISHER_ONLY || "false") === "true";
+
+if (
+  __ENV.PUBLISHER_ONLY !== undefined &&
+  __ENV.PUBLISHER_ONLY !== "true" &&
+  __ENV.PUBLISHER_ONLY !== "false"
+) {
+  throw new Error("PUBLISHER_ONLY must be true or false");
+}
 
 const VISIBILITY_TIMEOUT_MS = Number(
   __ENV.VISIBILITY_TIMEOUT_MS || 20000,
@@ -122,6 +131,10 @@ const finalDrainSuccess = new Rate(
   "final_drain_success",
 );
 
+const finalDrainCountKnown = new Rate(
+  "final_drain_count_known",
+);
+
 const persistedIngestionLogs = new Counter(
   "persisted_ingestion_logs",
 );
@@ -164,50 +177,62 @@ export const options = {
       },
     },
 
-    aggregation: {
-      executor: "constant-arrival-rate",
-      exec: "aggregate",
-      rate: 1,
-      timeUnit: "1s",
-      duration: DURATION,
-      preAllocatedVUs: 3,
-      maxVUs: 20,
-      gracefulStop: "5s",
+    ...(PUBLISHER_ONLY
+      ? {}
+      : {
+          aggregation: {
+            executor: "constant-arrival-rate",
+            exec: "aggregate",
+            rate: 1,
+            timeUnit: "1s",
+            duration: DURATION,
+            preAllocatedVUs: 3,
+            maxVUs: 20,
+            gracefulStop: "5s",
 
-      tags: {
-        workload: "aggregation",
-      },
-    },
+            tags: {
+              workload: "aggregation",
+            },
+          },
+        }),
 
-    querying: {
-      executor: "constant-arrival-rate",
-      exec: "queryLogs",
-      rate: 1,
-      timeUnit: "1s",
-      duration: DURATION,
-      preAllocatedVUs: 3,
-      maxVUs: 20,
-      gracefulStop: "5s",
+    ...(PUBLISHER_ONLY
+      ? {}
+      : {
+          querying: {
+            executor: "constant-arrival-rate",
+            exec: "queryLogs",
+            rate: 1,
+            timeUnit: "1s",
+            duration: DURATION,
+            preAllocatedVUs: 3,
+            maxVUs: 20,
+            gracefulStop: "5s",
 
-      tags: {
-        workload: "query",
-      },
-    },
+            tags: {
+              workload: "query",
+            },
+          },
+        }),
 
-    visibility: {
-      executor: "constant-arrival-rate",
-      exec: "checkVisibility",
-      rate: 1,
-      timeUnit: "10s",
-      duration: DURATION,
-      preAllocatedVUs: 3,
-      maxVUs: 20,
-      gracefulStop: "20s",
+    ...(PUBLISHER_ONLY
+      ? {}
+      : {
+          visibility: {
+            executor: "constant-arrival-rate",
+            exec: "checkVisibility",
+            rate: 1,
+            timeUnit: "10s",
+            duration: DURATION,
+            preAllocatedVUs: 3,
+            maxVUs: 20,
+            gracefulStop: "20s",
 
-      tags: {
-        workload: "visibility",
-      },
-    },
+            tags: {
+              workload: "visibility",
+            },
+          },
+        }),
   },
 
   thresholds: {
@@ -219,39 +244,11 @@ export const options = {
       `count>=${EXPECTED_INGEST_ITERATIONS}`,
     ],
 
-    persisted_ingestion_logs: [
-      `count>=${EXPECTED_ACCEPTED_LOGS}`,
-    ],
-
     post_success: ["rate==1"],
-    query_success: ["rate==1"],
-    aggregate_success: ["rate==1"],
-    visibility_success: ["rate==1"],
-    final_drain_success: ["rate==1"],
     post_timeouts: ["count==0"],
-    query_timeouts: ["count==0"],
-    aggregate_timeouts: ["count==0"],
-    visibility_timeouts: ["count==0"],
 
     "http_req_duration{endpoint:ingest}": [
       "p(95)<1000",
-    ],
-
-    query_latency: [
-      "p(95)<1000",
-    ],
-
-    aggregate_latency: [
-      "p(95)<1000",
-    ],
-
-    visibility_latency: [
-      `p(95)<${VISIBILITY_TIMEOUT_MS}`,
-      `max<${VISIBILITY_TIMEOUT_MS}`,
-    ],
-
-    final_drain_latency: [
-      `max<${FINAL_DRAIN_TIMEOUT_MS}`,
     ],
 
     checks: ["rate==1"],
@@ -261,9 +258,32 @@ export const options = {
     ],
 
     "dropped_iterations{scenario:ingestion}": ["count==0"],
-    "dropped_iterations{scenario:aggregation}": ["count==0"],
-    "dropped_iterations{scenario:querying}": ["count==0"],
-    "dropped_iterations{scenario:visibility}": ["count==0"],
+
+    ...(PUBLISHER_ONLY ? {} : {
+      persisted_ingestion_logs: [
+        `count>=${EXPECTED_ACCEPTED_LOGS}`,
+      ],
+      query_success: ["rate==1"],
+      aggregate_success: ["rate==1"],
+      visibility_success: ["rate==1"],
+      final_drain_success: ["rate==1"],
+      final_drain_count_known: ["rate==1"],
+      query_timeouts: ["count==0"],
+      aggregate_timeouts: ["count==0"],
+      visibility_timeouts: ["count==0"],
+      query_latency: ["p(95)<1000"],
+      aggregate_latency: ["p(95)<1000"],
+      visibility_latency: [
+        `p(95)<${VISIBILITY_TIMEOUT_MS}`,
+        `max<${VISIBILITY_TIMEOUT_MS}`,
+      ],
+      final_drain_latency: [
+        `max<${FINAL_DRAIN_TIMEOUT_MS}`,
+      ],
+      "dropped_iterations{scenario:aggregation}": ["count==0"],
+      "dropped_iterations{scenario:querying}": ["count==0"],
+      "dropped_iterations{scenario:visibility}": ["count==0"],
+    }),
   },
 };
 
@@ -792,11 +812,19 @@ function countPersistedRunLogs(
 }
 
 export function teardown(data) {
+  if (PUBLISHER_ONLY) {
+    console.log(
+      "publisher-only diagnostic complete; persistence and visibility were not measured",
+    );
+    return;
+  }
+
   const startedAt = Date.now();
 
   let persisted = 0;
   let lastStatus = 0;
   let lastBody = "";
+  let countKnown = false;
 
   while (
     Date.now() - startedAt <
@@ -819,6 +847,14 @@ export function teardown(data) {
     const body = safeJson(response);
 
     if (response.status === 200) {
+      countKnown = Array.isArray(body?.buckets);
+
+      if (!countKnown) {
+        lastBody = "aggregate response did not contain buckets";
+        sleep(POLL_INTERVAL_MS / 1000);
+        continue;
+      }
+
       persisted =
         countPersistedRunLogs(
           body?.buckets,
@@ -838,6 +874,7 @@ export function teardown(data) {
 
         finalDrainLatency.add(drainMs);
         finalDrainSuccess.add(true);
+        finalDrainCountKnown.add(true);
 
         console.log(
           `scheduled database drain complete ` +
@@ -857,19 +894,24 @@ export function teardown(data) {
   const drainMs =
     Date.now() - startedAt;
 
-  persistedIngestionLogs.add(
-    persisted,
-  );
+  if (countKnown) {
+    persistedIngestionLogs.add(persisted);
+  }
 
   finalDrainLatency.add(
     drainMs,
   );
 
   finalDrainSuccess.add(false);
+  finalDrainCountKnown.add(countKnown);
+
+  const persistedDescription = countKnown
+    ? String(persisted)
+    : "UNKNOWN";
 
   console.error(
     `database drain did not reach scheduled target ` +
-      `persisted=${persisted} ` +
+      `persisted=${persistedDescription} ` +
       `expected=${data.expectedAcceptedLogs} ` +
       `elapsed_ms=${drainMs} ` +
       `status=${lastStatus} ` +
@@ -926,6 +968,7 @@ function failedChecks(
   data,
   accepted,
   persisted,
+  persistedKnown,
 ) {
   const failures = [];
 
@@ -947,7 +990,7 @@ function failedChecks(
     }
   }
 
-  if (persisted !== accepted) {
+  if (persistedKnown && persisted !== accepted) {
     failures.push(
       `persistence consistency: accepted=${accepted}, persisted=${persisted}`,
     );
@@ -969,6 +1012,13 @@ function renderSummary(data) {
     "count",
   );
 
+  const persistedKnown =
+    metricValue(
+      data,
+      "final_drain_count_known",
+      "rate",
+    ) === 1;
+
   const completedRequests = metricValue(
     data,
     "completed_ingestion_requests",
@@ -983,10 +1033,16 @@ function renderSummary(data) {
     );
 
   const persistenceDifference =
-    accepted - persisted;
+    persistedKnown
+      ? accepted - persisted
+      : null;
 
   const persistenceStatus =
-    persistenceDifference === 0
+    PUBLISHER_ONLY
+      ? "NOT MEASURED (publisher-only diagnostic)"
+      : !persistedKnown
+      ? "UNKNOWN (final count query did not complete)"
+      : persistenceDifference === 0
       ? "CONSISTENT"
       : persistenceDifference > 0
         ? `MISSING ${formatNumber(persistenceDifference)} ACCEPTED LOGS`
@@ -1017,12 +1073,17 @@ function renderSummary(data) {
     data,
     accepted,
     persisted,
+    persistedKnown,
   );
 
   const status =
-    failures.length === 0
-      ? "PASS"
-      : "FAIL";
+    PUBLISHER_ONLY
+      ? failures.length === 0
+        ? "PUBLISHER PATH PASS (NOT END-TO-END)"
+        : "PUBLISHER PATH FAIL"
+      : failures.length === 0
+        ? "PASS"
+        : "FAIL";
 
   const lines = [
     "",
@@ -1031,6 +1092,8 @@ function renderSummary(data) {
     "============================================================",
 
     ` Result:                    ${status}`,
+
+    ` Mode:                      ${PUBLISHER_ONLY ? "publisher-only diagnostic" : "end-to-end"}`,
 
     ` Target:                    ` +
       `${formatNumber(TARGET_LPS)} logs/s`,
@@ -1096,115 +1159,117 @@ function renderSummary(data) {
     ` POST timeouts:             ` +
       `${formatNumber(metricValue(data, "post_timeouts", "count"))}`,
 
-    "",
-    " READ PATH",
+    ...(PUBLISHER_ONLY ? [] : [
+      "",
+      " READ PATH",
 
-    ` GET success:               ` +
-      `${formatPercent(
-        metricValue(
-          data,
-          "query_success",
-          "rate",
-        ),
-      )}`,
+      ` GET success:               ` +
+        `${formatPercent(
+          metricValue(
+            data,
+            "query_success",
+            "rate",
+          ),
+        )}`,
 
-    ` GET latency p95:           ` +
-      `${formatNumber(
-        metricValue(
-          data,
-          "query_latency",
-          "p(95)",
-        ),
-        2,
-      )} ms`,
+      ` GET latency p95:           ` +
+        `${formatNumber(
+          metricValue(
+            data,
+            "query_latency",
+            "p(95)",
+          ),
+          2,
+        )} ms`,
 
-    ` GET timeouts:              ` +
-      `${formatNumber(metricValue(data, "query_timeouts", "count"))}`,
+      ` GET timeouts:              ` +
+        `${formatNumber(metricValue(data, "query_timeouts", "count"))}`,
 
-    ` Aggregate success:         ` +
-      `${formatPercent(
-        metricValue(
-          data,
-          "aggregate_success",
-          "rate",
-        ),
-      )}`,
+      ` Aggregate success:         ` +
+        `${formatPercent(
+          metricValue(
+            data,
+            "aggregate_success",
+            "rate",
+          ),
+        )}`,
 
-    ` Aggregate latency p95:     ` +
-      `${formatNumber(
-        metricValue(
-          data,
-          "aggregate_latency",
-          "p(95)",
-        ),
-        2,
-      )} ms`,
+      ` Aggregate latency p95:     ` +
+        `${formatNumber(
+          metricValue(
+            data,
+            "aggregate_latency",
+            "p(95)",
+          ),
+          2,
+        )} ms`,
 
-    ` Aggregate timeouts:        ` +
-      `${formatNumber(metricValue(data, "aggregate_timeouts", "count"))}`,
+      ` Aggregate timeouts:        ` +
+        `${formatNumber(metricValue(data, "aggregate_timeouts", "count"))}`,
 
-    "",
-    " EVENTUAL CONSISTENCY",
+      "",
+      " EVENTUAL CONSISTENCY",
 
-    ` Visibility success:        ` +
-      `${formatPercent(
-        metricValue(
-          data,
-          "visibility_success",
-          "rate",
-        ),
-      )}`,
+      ` Visibility success:        ` +
+        `${formatPercent(
+          metricValue(
+            data,
+            "visibility_success",
+            "rate",
+          ),
+        )}`,
 
-    ` Visibility latency p95:    ` +
-      `${formatNumber(
-        metricValue(
-          data,
-          "visibility_latency",
-          "p(95)",
-        ),
-        2,
-      )} ms`,
+      ` Visibility latency p95:    ` +
+        `${formatNumber(
+          metricValue(
+            data,
+            "visibility_latency",
+            "p(95)",
+          ),
+          2,
+        )} ms`,
 
-    ` Worst visibility:          ` +
-      `${formatNumber(
-        metricValue(
-          data,
-          "visibility_latency",
-          "max",
-        ),
-        2,
-      )} ms`,
+      ` Worst visibility:          ` +
+        `${formatNumber(
+          metricValue(
+            data,
+            "visibility_latency",
+            "max",
+          ),
+          2,
+        )} ms`,
 
-    ` Visibility timeouts:       ` +
-      `${formatNumber(metricValue(data, "visibility_timeouts", "count"))}`,
+      ` Visibility timeouts:       ` +
+        `${formatNumber(metricValue(data, "visibility_timeouts", "count"))}`,
 
-    ` Persisted run logs:        ` +
-      `${formatNumber(persisted)}`,
+      ` Persisted run logs:        ` +
+        `${persistedKnown ? formatNumber(persisted) : "UNKNOWN"}`,
 
-    ` Accepted - persisted:      ` +
-      `${formatNumber(persistenceDifference)}`,
+      ` Accepted - persisted:      ` +
+        `${persistedKnown ? formatNumber(persistenceDifference) : "UNKNOWN"}`,
 
-    ` Persistence status:        ` +
-      `${persistenceStatus}`,
+      ` Persistence status:        ` +
+        `${persistenceStatus}`,
 
-    ` Final drain success:       ` +
-      `${formatPercent(
-        metricValue(
-          data,
-          "final_drain_success",
-          "rate",
-        ),
-      )}`,
+      ` Final drain success:       ` +
+        `${formatPercent(
+          metricValue(
+            data,
+            "final_drain_success",
+            "rate",
+          ),
+        )}`,
 
-    ` Final drain time:          ` +
-      `${formatNumber(
-        metricValue(
-          data,
-          "final_drain_latency",
-          "max",
-        ),
-        2,
-      )} ms`,
+      ` Final drain time:          ` +
+        `${formatNumber(
+          metricValue(
+            data,
+            "final_drain_latency",
+            "max",
+          ),
+          2,
+        )} ms`,
+    ]),
 
     "",
   ];
@@ -1243,6 +1308,13 @@ export function handleSummary(data) {
     "count",
   );
 
+  const persistedKnown =
+    metricValue(
+      data,
+      "final_drain_count_known",
+      "rate",
+    ) === 1;
+
   const completedRequests = metricValue(
     data,
     "completed_ingestion_requests",
@@ -1263,6 +1335,10 @@ export function handleSummary(data) {
       JSON.stringify(
         {
           benchmark: {
+            mode:
+              PUBLISHER_ONLY
+                ? "publisher-only"
+                : "end-to-end",
             targetLogsPerSecond:
               TARGET_LPS,
 
@@ -1290,13 +1366,20 @@ export function handleSummary(data) {
               accepted,
 
             persistedLogs:
-              persisted,
+              persistedKnown ? persisted : null,
 
             acceptedMinusPersisted:
-              accepted - persisted,
+              persistedKnown
+                ? accepted - persisted
+                : null,
 
             persistenceConsistent:
-              accepted === persisted,
+              persistedKnown
+                ? accepted === persisted
+                : null,
+
+            persistedCountKnown:
+              persistedKnown,
 
             schedulingDifference:
               accepted - EXPECTED_ACCEPTED_LOGS,

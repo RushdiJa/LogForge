@@ -42,6 +42,8 @@ RETENTION_DAYS=14 docker compose up -d --build
 
 Reads never pass through RabbitMQ. `GET /logs` uses PostgreSQL keyset pagination ordered by `(timestamp DESC, id DESC)`. Aggregation composes aligned ranges from one-minute rollups; searches, attribute filters, and partial-minute ranges use raw logs to preserve correctness.
 
+The log query uses explicit `NULLS LAST` ordering to match the existing descending timestamp/ID indexes. Both pagination columns are non-null, so this preserves API ordering while allowing PostgreSQL to avoid unnecessary scans and sorts.
+
 The startup order is:
 
 1. PostgreSQL and RabbitMQ pass their container health checks.
@@ -110,6 +112,10 @@ LOG_LEVEL=info QUEUE_METRICS_INTERVAL_MS=10000 docker compose up -d --build
 ```
 
 The telemetry reports validation cost; publish serialization and confirmation latency; confirmations in flight and publisher backpressure; publish, consume, and insert rates; ready and locally unacknowledged messages; batch preparation and insert duration; queue-to-database lag; failed inserts and requeues; plus process CPU, memory, and event-loop delay. It is disabled by default.
+
+For a controlled publisher-only diagnostic, start the service with `QUEUE_CONSUMER_ENABLED=false`, then run k6 with `PUBLISHER_ONLY=true`. This keeps durable publishing and confirmations enabled while pausing database consumption, and removes read/persistence scenarios from that diagnostic load. The application option defaults to `true`, and the benchmark option defaults to `false`; neither diagnostic setting should be used for normal operation. Afterward, restart with the consumer enabled and allow its durable queue to drain before comparing persisted counts.
+
+An HTTP client timeout does not imply that its batch was discarded. Once RabbitMQ publishing has started, the service cannot safely cancel the durable publish; the message may still be confirmed and persisted after the client disconnects. Clients that retry after an ambiguous timeout must account for the possibility of duplicates.
 
 The k6 summary is written to `benchmark-summary.json`. It reports load-generator scheduling separately from persistence consistency: a run can fail its scheduled load target while still confirming that every accepted log was persisted.
 
