@@ -36,6 +36,13 @@ export class RetentionService {
     } while (deleted === 10_000);
 
     await this.repository.deleteExpiredRollups(this.retentionDays);
+
+    do {
+      deleted = await this.repository.deleteProcessedIngestionBatches();
+      if (deleted === 10_000) {
+        await new Promise<void>((resolve) => setImmediate(resolve));
+      }
+    } while (deleted === 10_000);
   }
 
   private async runAndSchedule(): Promise<void> {

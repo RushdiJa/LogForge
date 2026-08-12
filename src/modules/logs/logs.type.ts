@@ -55,8 +55,8 @@ export interface LogPage {
   next_cursor: string | null;
 }
 
-export interface QueuePublisher {
-  publish(logs: AcceptedLog[]): Promise<void>;
+export interface DurableIngestionAcceptor {
+  accept(logs: AcceptedLog[]): Promise<void>;
 }
 
 export interface IngestionMetrics {

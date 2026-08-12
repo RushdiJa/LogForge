@@ -1138,7 +1138,7 @@ function renderSummary(data) {
           data,
           "post_success",
           "rate",
-        ),
+        ), 
       )}`,
 
     ` POST latency p95:          ` +

@@ -2,10 +2,13 @@ export interface AppConfig {
   port: number;
   databaseUrl: string;
   rabbitMqUrl: string;
+  redisUrl: string;
+  cacheTtlMs: number;
   retentionDays: number;
   logLevel: string;
   queueFlushIntervalMs: number;
   queueMaxBatchLogs: number;
+  queueWriteConcurrency: number;
   queueMetricsIntervalMs: number;
   queueConsumerEnabled: boolean;
 }
@@ -41,10 +44,13 @@ export function loadConfig(): AppConfig {
     databaseUrl:
       process.env.DATABASE_URL ?? "postgres://logforge:logforge@localhost:5432/logforge",
     rabbitMqUrl: process.env.RABBITMQ_URL ?? "amqp://logforge:logforge@localhost:5672",
+    redisUrl: process.env.REDIS_URL ?? "redis://localhost:6379",
+    cacheTtlMs: integer("CACHE_TTL_MS", 5_000, 1_000, 19_000),
     retentionDays: integer("RETENTION_DAYS", 30, 1, 3_650),
     logLevel: process.env.LOG_LEVEL ?? "warn",
     queueFlushIntervalMs: integer("QUEUE_FLUSH_INTERVAL_MS", 250, 5, 1_000),
     queueMaxBatchLogs: integer("QUEUE_MAX_BATCH_LOGS", 5_000, 100, 20_000),
+    queueWriteConcurrency: integer("QUEUE_WRITE_CONCURRENCY", 1, 1, 2),
     queueMetricsIntervalMs: integer("QUEUE_METRICS_INTERVAL_MS", 0, 0, 60_000),
     queueConsumerEnabled: boolean("QUEUE_CONSUMER_ENABLED", true),
   };

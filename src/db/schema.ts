@@ -1,4 +1,4 @@
-import { bigint, bigserial, index, jsonb, pgEnum, pgTable, primaryKey, text, timestamp } from "drizzle-orm/pg-core";
+import { bigint, bigserial, index, integer, jsonb, pgEnum, pgTable, primaryKey, text, timestamp, uuid } from "drizzle-orm/pg-core";
 
 export const logLevel = pgEnum("log_level", ["debug", "info", "warn", "error"]);
 
@@ -23,8 +23,45 @@ export const logs = pgTable(
       table.timestamp.desc(),
       table.id.desc(),
     ),
-    index("logs_level_timestamp_id_idx").on(table.level, table.timestamp.desc(), table.id.desc()),
-    index("logs_message_trgm_idx").using("gin", table.message.op("gin_trgm_ops")),
+  ],
+);
+
+export const logMessageSearch = pgTable(
+  "log_message_search",
+  {
+    message: text("message").primaryKey(),
+  },
+  (table) => [
+    index("log_message_search_trgm_idx").using(
+      "gin",
+      table.message.op("gin_trgm_ops"),
+    ),
+  ],
+);
+
+export const logLegacyMessageSearch = pgTable(
+  "log_legacy_message_search",
+  {
+    message: text("message").primaryKey(),
+  },
+  (table) => [
+    index("log_legacy_message_search_trgm_idx").using(
+      "gin",
+      table.message.op("gin_trgm_ops"),
+    ),
+  ],
+);
+
+export const logHotArchiveMessageSearch = pgTable(
+  "log_hot_archive_message_search",
+  {
+    message: text("message").primaryKey(),
+  },
+  (table) => [
+    index("log_hot_archive_message_search_trgm_idx").using(
+      "gin",
+      table.message.op("gin_trgm_ops"),
+    ),
   ],
 );
 
@@ -37,4 +74,32 @@ export const logRollups1m = pgTable(
     count: bigint("count", { mode: "bigint" }).notNull(),
   },
   (table) => [primaryKey({ columns: [table.bucketStart, table.service, table.level] })],
+);
+
+export const ingestionBatches = pgTable(
+  "ingestion_batches",
+  {
+    batchId: uuid("batch_id").primaryKey(),
+    payload: jsonb("payload"),
+    acceptedCount: integer("accepted_count").notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true, precision: 3 })
+      .notNull()
+      .defaultNow(),
+    lastPublishAttemptAt: timestamp("last_publish_attempt_at", {
+      withTimezone: true,
+      precision: 3,
+    }),
+    publishAttempts: integer("publish_attempts").notNull().default(0),
+    publishedAt: timestamp("published_at", { withTimezone: true, precision: 3 }),
+    processedAt: timestamp("processed_at", { withTimezone: true, precision: 3 }),
+    lastPublishError: text("last_publish_error"),
+  },
+  (table) => [
+    index("ingestion_batches_pending_publish_idx").on(
+      table.lastPublishAttemptAt,
+      table.createdAt,
+      table.batchId,
+    ),
+    index("ingestion_batches_processed_at_idx").on(table.processedAt),
+  ],
 );

@@ -20,15 +20,38 @@ function isMinuteAligned(timestamp: string): boolean {
   return Date.parse(timestamp) % 60_000 === 0;
 }
 
+function canUseRollups(query: AggregateQuery): boolean {
+  return (
+    query.q === undefined &&
+    Object.keys(query.attributes).length === 0 &&
+    isMinuteAligned(query.since) &&
+    isMinuteAligned(query.until)
+  );
+}
+
+export function isCacheableAggregateQuery(query: AggregateQuery): boolean {
+  return (
+    canUseRollups(query) &&
+    Date.parse(query.until) - Date.parse(query.since) <= 24 * 60 * 60 * 1_000
+  );
+}
+
+export function aggregateCacheIdentity(query: AggregateQuery): string {
+  return JSON.stringify([
+    query.since,
+    query.until,
+    query.bucket,
+    query.groupBy ?? null,
+    query.service ?? null,
+    query.level ?? null,
+  ]);
+}
+
 export class AggregateRepository {
   constructor(private readonly sql: Database) {}
 
   async aggregate(query: AggregateQuery): Promise<AggregateBucket[]> {
-    const canUseRollup =
-      query.q === undefined &&
-      Object.keys(query.attributes).length === 0 &&
-      isMinuteAligned(query.since) &&
-      isMinuteAligned(query.until);
+    const canUseRollup = canUseRollups(query);
 
     const rows = canUseRollup
       ? await this.aggregateRollups(query)

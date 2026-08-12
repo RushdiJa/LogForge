@@ -16,6 +16,8 @@ COPY --from=build --chown=node:node /app/node_modules ./node_modules
 COPY --from=build --chown=node:node /app/dist ./dist
 COPY --chown=node:node package.json ./package.json
 COPY --chown=node:node migrations ./migrations
+COPY --chown=node:node benchmark/rabbitmq-models.mjs ./benchmark/rabbitmq-models.mjs
+COPY --chown=node:node benchmark/rabbitmq-saturation.mjs ./benchmark/rabbitmq-saturation.mjs
 
 USER node
 EXPOSE 8080

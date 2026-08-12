@@ -1,9 +1,9 @@
 import { describe, expect, it, vi } from "vitest";
 
 import type { Database } from "../../db/client.js";
-import { buildWhere, LogsRepository } from "./logs.repository.js";
+import { buildWhere, escapeCopyText, LogsRepository } from "./logs.repository.js";
 import { LogsService } from "./logs.service.js";
-import type { QueuePublisher } from "./logs.type.js";
+import type { DurableIngestionAcceptor } from "./logs.type.js";
 import {
   decodeCursor,
   encodeCursor,
@@ -118,23 +118,38 @@ describe("log query validation", () => {
     expect(where.text).not.toContain(malicious);
     expect(where.parameters).toContain(malicious);
   });
+
+  it("uses the normalized message catalog for substring filters", () => {
+    const where = buildWhere({ q: "declined%_\\", attributes: {} });
+
+    expect(where.text).toContain("FROM log_message_search message_search");
+    expect(where.text).toContain("hashtextextended(message_search.message, 0)");
+    expect(where.text).toContain("message_search.message = l.message");
+    expect(where.parameters).toEqual(["%declined\\%\\_\\\\%"]);
+  });
 });
 
 describe("LogsService", () => {
   it("publishes only valid logs and returns rejection indices", async () => {
-    const publisher: QueuePublisher = { publish: vi.fn().mockResolvedValue(undefined) };
+    const ingestion: DurableIngestionAcceptor = { accept: vi.fn().mockResolvedValue(undefined) };
     const repository = {} as LogsRepository;
-    const service = new LogsService(repository, publisher);
+    const service = new LogsService(repository, ingestion);
 
     const result = await service.ingest({ logs: [validLog(), null] });
 
     expect(result.accepted).toBe(1);
     expect(result.rejected[0]?.index).toBe(1);
-    expect(publisher.publish).toHaveBeenCalledTimes(1);
+    expect(ingestion.accept).toHaveBeenCalledTimes(1);
   });
 });
 
 describe("LogsRepository", () => {
+  it("encodes every PostgreSQL text COPY control character safely", () => {
+    expect(escapeCopyText("tab\tline\nreturn\rslash\\back\bform\fvertical\v")).toBe(
+      "tab\\tline\\nreturn\\rslash\\\\back\\bform\\fvertical\\v",
+    );
+  });
+
   it("serializes a PostgreSQL string timestamp as ISO 8601", async () => {
     const unsafe = vi.fn().mockResolvedValue([
       {
@@ -161,7 +176,63 @@ describe("LogsRepository", () => {
       },
     ]);
     expect(unsafe.mock.calls[0]?.[0]).toContain(
-      "ORDER BY timestamp DESC NULLS LAST, id DESC NULLS LAST",
+      "ORDER BY l.timestamp DESC NULLS LAST, l.id DESC NULLS LAST",
     );
+  });
+
+  it("merges bounded legacy and hot candidates for message searches", async () => {
+    const unsafe = vi
+      .fn()
+      .mockResolvedValueOnce([{ exists: true }])
+      .mockResolvedValueOnce([]);
+    const repository = new LogsRepository({ unsafe } as unknown as Database);
+
+    await repository.find({
+      service: "api",
+      q: "needle",
+      attributes: { region: "us" },
+      limit: 10,
+    });
+
+    const [query, parameters] = unsafe.mock.calls[1] as [string, unknown[]];
+    expect(query).toContain("FROM logs_legacy l");
+    expect(query).toContain("FROM logs_hot_archive l");
+    expect(query).toContain("FROM logs_hot l");
+    expect(query).toContain("FROM log_legacy_message_search message_catalog_guard");
+    expect(query).toContain("FROM log_hot_archive_message_search message_catalog_guard");
+    expect(query).toContain("FROM log_message_search message_search");
+    expect(query).toContain("l.message ILIKE $2");
+    expect(query).toContain("message_catalog_guard.message ILIKE $7");
+    expect(query).toContain("message_search.message ILIKE $12");
+    expect(parameters).toEqual([
+      "api",
+      "%needle%",
+      "region",
+      "us",
+      11,
+      "api",
+      "%needle%",
+      "region",
+      "us",
+      11,
+      "api",
+      "%needle%",
+      "region",
+      "us",
+      11,
+      11,
+    ]);
+  });
+
+  it("returns an absent substring without scanning any log partition", async () => {
+    const unsafe = vi.fn().mockResolvedValueOnce([{ exists: false }]);
+    const repository = new LogsRepository({ unsafe } as unknown as Database);
+
+    await expect(repository.find({ q: "new visibility marker", attributes: {}, limit: 1 }))
+      .resolves.toEqual([]);
+
+    expect(unsafe).toHaveBeenCalledOnce();
+    expect(unsafe.mock.calls[0]?.[0]).toContain("FROM log_message_search");
+    expect(unsafe.mock.calls[0]?.[0]).not.toContain("FROM logs_");
   });
 });

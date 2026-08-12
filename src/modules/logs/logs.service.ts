@@ -1,17 +1,16 @@
-import { QueueUnavailableError } from "./logs.error.js";
 import { LogsRepository } from "./logs.repository.js";
 import type {
+  DurableIngestionAcceptor,
   IngestionMetrics,
   IngestResult,
   LogPage,
-  QueuePublisher,
 } from "./logs.type.js";
 import { encodeCursor, validateIngestRequest, validateLogQuery } from "./logs.validate.js";
 
 export class LogsService {
   constructor(
     private readonly repository: LogsRepository,
-    private readonly publisher: QueuePublisher,
+    private readonly ingestion: DurableIngestionAcceptor,
     private readonly metrics?: IngestionMetrics,
   ) {}
 
@@ -27,11 +26,7 @@ export class LogsService {
     }
 
     if (valid.length > 0) {
-      try {
-        await this.publisher.publish(valid);
-      } catch {
-        throw new QueueUnavailableError();
-      }
+      await this.ingestion.accept(valid);
     }
 
     return { accepted: valid.length, rejected };

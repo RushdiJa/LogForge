@@ -2,21 +2,21 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { createApp } from "./app.js";
 import type { Database } from "./db/client.js";
-import type { QueuePublisher } from "./modules/logs/logs.type.js";
+import type { DurableIngestionAcceptor } from "./modules/logs/logs.type.js";
 import { ReadinessState } from "./shared/readiness.js";
 
 const apps: ReturnType<typeof createApp>[] = [];
 
 function testApp(database = {} as Database) {
-  const publisher: QueuePublisher = { publish: vi.fn().mockResolvedValue(undefined) };
+  const ingestion: DurableIngestionAcceptor = { accept: vi.fn().mockResolvedValue(undefined) };
   const app = createApp({
     database,
-    publisher,
+    ingestion,
     readiness: new ReadinessState(),
     logLevel: "silent",
   });
   apps.push(app);
-  return { app, publisher };
+  return { app, ingestion };
 }
 
 afterEach(async () => {
@@ -25,7 +25,7 @@ afterEach(async () => {
 
 describe("HTTP contract", () => {
   it("queues valid logs and reports invalid batch indices", async () => {
-    const { app, publisher } = testApp();
+    const { app, ingestion } = testApp();
     const response = await app.inject({
       method: "POST",
       url: "/logs",
@@ -45,7 +45,7 @@ describe("HTTP contract", () => {
 
     expect(response.statusCode).toBe(200);
     expect(response.json()).toMatchObject({ accepted: 1, rejected: [{ index: 1 }] });
-    expect(publisher.publish).toHaveBeenCalledOnce();
+    expect(ingestion.accept).toHaveBeenCalledOnce();
   });
 
   it("returns the required 400 response for malformed JSON", async () => {
@@ -121,7 +121,7 @@ describe("HTTP contract", () => {
 
     const firstSql = String(unsafe.mock.calls[0]?.[0]);
     expect(firstSql).toContain(
-      "ORDER BY timestamp DESC NULLS LAST, id DESC NULLS LAST",
+      "ORDER BY l.timestamp DESC NULLS LAST, l.id DESC NULLS LAST",
     );
     expect(unsafe.mock.calls[1]?.[1]).toEqual([
       "error",

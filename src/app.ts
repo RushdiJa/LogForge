@@ -1,5 +1,6 @@
 import Fastify, { LogController, type FastifyInstance } from "fastify";
 
+import type { QueryCache } from "./cache/redis-query-cache.js";
 import type { Database } from "./db/client.js";
 import { HealthController } from "./modules/health/health.controller.js";
 import { HealthRepository } from "./modules/health/health.repository.js";
@@ -13,14 +14,15 @@ import { LogsController } from "./modules/logs/logs.controller.js";
 import { LogsRepository } from "./modules/logs/logs.repository.js";
 import { registerLogsRoutes } from "./modules/logs/logs.routes.js";
 import { LogsService } from "./modules/logs/logs.service.js";
-import type { IngestionMetrics, QueuePublisher } from "./modules/logs/logs.type.js";
+import type { DurableIngestionAcceptor, IngestionMetrics } from "./modules/logs/logs.type.js";
 import { registerErrorHandler } from "./shared/error-handler.js";
 import type { ReadinessState } from "./shared/readiness.js";
 
 export interface AppDependencies {
   database: Database;
-  publisher: QueuePublisher;
+  ingestion: DurableIngestionAcceptor;
   ingestionMetrics?: IngestionMetrics;
+  queryCache?: QueryCache;
   readiness: ReadinessState;
   logLevel?: string;
 }
@@ -66,10 +68,13 @@ export function createApp(dependencies: AppDependencies): FastifyInstance {
 
   const logsRepository = new LogsRepository(dependencies.database);
   const logsController = new LogsController(
-    new LogsService(logsRepository, dependencies.publisher, dependencies.ingestionMetrics),
+    new LogsService(logsRepository, dependencies.ingestion, dependencies.ingestionMetrics),
   );
   const aggregateController = new AggregateController(
-    new AggregateService(new AggregateRepository(dependencies.database)),
+    new AggregateService(
+      new AggregateRepository(dependencies.database),
+      dependencies.queryCache,
+    ),
   );
   const healthController = new HealthController(
     new HealthService(new HealthRepository(dependencies.database), dependencies.readiness),

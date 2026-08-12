@@ -7,26 +7,37 @@ import { QueueMetrics } from "./queue.metrics.js";
 import { QueuePublisher } from "./queue.publisher.js";
 import type { QueueRepository } from "./queue.repository.js";
 import { QueueConsumerService } from "./queue.service.js";
-import { parseQueuedLogs } from "./queue.validate.js";
+import { parseQueuedBatchReference } from "./queue.validate.js";
 
-function queuedMessage(): ConsumeMessage {
+function batchId(value: number): string {
+  return `00000000-0000-4000-8000-${String(value).padStart(12, "0")}`;
+}
+
+function processedResult(batchIds: string[], insertedLogs = batchIds.length) {
+  return {
+    messageCatalogUpsertMs: 0,
+    rawInsertMs: 0,
+    rollupAggregationMs: 0,
+    rollupUpsertMs: 0,
+    transactionMs: 1,
+    commitAndPoolMs: 1,
+    insertedLogs,
+    knownBatchIds: new Set(batchIds),
+    oldestAcceptedAtMs: Date.now(),
+  };
+}
+
+function queuedMessage(deliveryTag = 1, logCount = 1): ConsumeMessage {
   return {
     content: Buffer.from(
       JSON.stringify({
-        logs: [
-          {
-            timestamp: "2026-07-20T14:00:00.000Z",
-            level: "info",
-            service: "api",
-            message: "ready",
-            attributes: {},
-          },
-        ],
+        batchId: batchId(deliveryTag),
+        acceptedCount: logCount,
       }),
     ),
     fields: {
       consumerTag: "consumer",
-      deliveryTag: 1,
+      deliveryTag,
       redelivered: false,
       exchange: "",
       routingKey: "logs.ingest",
@@ -50,7 +61,14 @@ function queuedMessage(): ConsumeMessage {
   };
 }
 
-function consumerHarness(insertBatch: ReturnType<typeof vi.fn>) {
+function consumerHarness(
+  processBatches: ReturnType<typeof vi.fn>,
+  options: Partial<{
+    flushIntervalMs: number;
+    maxBatchLogs: number;
+    writeConcurrency: number;
+  }> = {},
+) {
   let receive: ((message: ConsumeMessage | null) => void) | undefined;
   const channel = {
     prefetch: vi.fn().mockResolvedValue(undefined),
@@ -67,13 +85,17 @@ function consumerHarness(insertBatch: ReturnType<typeof vi.fn>) {
   const queueRepository = {
     getChannels: () => ({ consumer: channel }),
   } as unknown as QueueRepository;
-  const logsRepository = { insertBatch } as unknown as LogsRepository;
+  const logsRepository = { processBatches } as unknown as LogsRepository;
   const logger = { error: vi.fn() } as unknown as FastifyBaseLogger;
   const service = new QueueConsumerService(
     queueRepository,
     logsRepository,
     logger,
-    { flushIntervalMs: 5, maxBatchLogs: 1 },
+    {
+      flushIntervalMs: options.flushIntervalMs ?? 5,
+      maxBatchLogs: options.maxBatchLogs ?? 1,
+      writeConcurrency: options.writeConcurrency ?? 1,
+    },
   );
 
   return {
@@ -85,38 +107,22 @@ function consumerHarness(insertBatch: ReturnType<typeof vi.fn>) {
 
 describe("internal queue message validation", () => {
   it("reads an internally published batch", () => {
-    const content = Buffer.from(
-      JSON.stringify({
-        logs: [
-          {
-            timestamp: "2026-07-20T14:00:00.000Z",
-            level: "info",
-            service: "api",
-            message: "ready",
-            attributes: {},
-          },
-        ],
-      }),
-    );
-    expect(parseQueuedLogs(content)).toHaveLength(1);
+    const content = Buffer.from(JSON.stringify({ batchId: batchId(1), acceptedCount: 500 }));
+    expect(parseQueuedBatchReference(content)).toEqual({
+      batchId: batchId(1),
+      acceptedCount: 500,
+    });
   });
 
   it("rejects malformed internal messages", () => {
-    expect(parseQueuedLogs(Buffer.from("{"))).toBeNull();
-    expect(parseQueuedLogs(Buffer.from(JSON.stringify({ value: [] })))).toBeNull();
+    expect(parseQueuedBatchReference(Buffer.from("{"))).toBeNull();
+    expect(parseQueuedBatchReference(Buffer.from(JSON.stringify({ value: [] })))).toBeNull();
     expect(
-      parseQueuedLogs(
+      parseQueuedBatchReference(
         Buffer.from(
           JSON.stringify({
-            logs: [
-              {
-                timestamp: "2026-07-20T14:00:00.000Z",
-                level: "critical",
-                service: "api",
-                message: "invalid",
-                attributes: {},
-              },
-            ],
+            batchId: "not-a-uuid",
+            acceptedCount: 0,
           }),
         ),
       ),
@@ -180,9 +186,10 @@ describe("queue metrics", () => {
 describe("queue publisher confirmations", () => {
   it("resolves only after RabbitMQ confirms the persistent message", async () => {
     let confirm: ((error: Error | null) => void) | undefined;
-    const sendToQueue = vi.fn().mockImplementation(
+    const publish = vi.fn().mockImplementation(
       (
-        _queue: string,
+        _exchange: string,
+        _routingKey: string,
         _content: Buffer,
         _options: unknown,
         callback: (error: Error | null) => void,
@@ -192,17 +199,11 @@ describe("queue publisher confirmations", () => {
       },
     );
     const repository = {
-      getChannels: () => ({ publisher: { sendToQueue } }),
+      getChannels: () => ({ publisher: { publish, on: vi.fn(), off: vi.fn() } }),
     } as unknown as QueueRepository;
     const publisher = new QueuePublisher(repository);
     const publishing = publisher.publish([
-      {
-        timestamp: "2026-07-20T14:00:00.000Z",
-        level: "info",
-        service: "api",
-        message: "ready",
-        attributes: {},
-      },
+      { batchId: batchId(1), acceptedCount: 500 },
     ]);
     let settled = false;
     void publishing.finally(() => {
@@ -213,6 +214,60 @@ describe("queue publisher confirmations", () => {
     expect(settled).toBe(false);
     confirm?.(null);
     await expect(publishing).resolves.toBeUndefined();
+    expect(publish).toHaveBeenCalledWith(
+      expect.any(String),
+      expect.any(String),
+      expect.any(Buffer),
+      expect.objectContaining({
+        persistent: true,
+        mandatory: true,
+        messageId: batchId(1),
+      }),
+      expect.any(Function),
+    );
+  });
+
+  it("uses one return listener and rejects an unroutable mandatory message", async () => {
+    let onReturn: ((message: ConsumeMessage) => void) | undefined;
+    let confirm: ((error: Error | null) => void) | undefined;
+    const on = vi.fn().mockImplementation(
+      (_event: string, listener: (message: ConsumeMessage) => void) => {
+        onReturn = listener;
+      },
+    );
+    const off = vi.fn();
+    const repository = {
+      getChannels: () => ({
+        publisher: {
+          on,
+          off,
+          publish: vi.fn().mockImplementation(
+            (
+              _exchange: string,
+              _routingKey: string,
+              _content: Buffer,
+              _options: unknown,
+              callback: (error: Error | null) => void,
+            ) => {
+              confirm = callback;
+              return true;
+            },
+          ),
+        },
+      }),
+    } as unknown as QueueRepository;
+    const publisher = new QueuePublisher(repository);
+    const publishing = publisher.publish([{ batchId: batchId(1), acceptedCount: 500 }]);
+
+    await Promise.resolve();
+    const returned = queuedMessage(1, 500);
+    returned.properties.messageId = batchId(1);
+    onReturn?.(returned);
+    confirm?.(null);
+
+    await expect(publishing).rejects.toThrow("unroutable batch");
+    expect(on).toHaveBeenCalledTimes(1);
+    expect(off).toHaveBeenCalledTimes(1);
   });
 
   it("rejects when RabbitMQ rejects the publisher confirmation", async () => {
@@ -220,9 +275,12 @@ describe("queue publisher confirmations", () => {
     const repository = {
       getChannels: () => ({
         publisher: {
-          sendToQueue: vi.fn().mockImplementation(
+          on: vi.fn(),
+          off: vi.fn(),
+          publish: vi.fn().mockImplementation(
             (
-              _queue: string,
+              _exchange: string,
+              _routingKey: string,
               _content: Buffer,
               _options: unknown,
               callback: (error: Error | null) => void,
@@ -238,32 +296,94 @@ describe("queue publisher confirmations", () => {
 
     await expect(
       publisher.publish([
-        {
-          timestamp: "2026-07-20T14:00:00.000Z",
-          level: "info",
-          service: "api",
-          message: "ready",
-          attributes: {},
-        },
+        { batchId: batchId(1), acceptedCount: 500 },
       ]),
     ).rejects.toBe(confirmationError);
   });
 });
 
 describe("queue consumer durability", () => {
-  it("acknowledges a message only after its database insert succeeds", async () => {
+  it("combines multiple queue messages into one database transaction", async () => {
     let finishInsert: (() => void) | undefined;
-    const insertBatch = vi.fn().mockImplementation(
-      () =>
-        new Promise<void>((resolve) => {
-          finishInsert = resolve;
+    const processBatches = vi.fn().mockImplementation(
+      (ids: string[]) =>
+        new Promise((resolve) => {
+          finishInsert = () => resolve(processedResult(ids, 2));
         }),
     );
-    const harness = consumerHarness(insertBatch);
+    const harness = consumerHarness(processBatches, {
+      flushIntervalMs: 1_000,
+      maxBatchLogs: 2,
+    });
+    await harness.service.start();
+
+    harness.receive(queuedMessage(1));
+    harness.receive(queuedMessage(2));
+
+    await vi.waitFor(() => expect(processBatches).toHaveBeenCalledOnce());
+    expect(processBatches.mock.calls[0]?.[0]).toHaveLength(2);
+    expect(harness.channel.ack).not.toHaveBeenCalled();
+
+    finishInsert?.();
+    await vi.waitFor(() => expect(harness.channel.ack).toHaveBeenCalledTimes(2));
+    await harness.service.stop();
+  });
+
+  it("runs at most the configured number of database writes concurrently", async () => {
+    const finishes: Array<() => void> = [];
+    const processBatches = vi.fn().mockImplementation(
+      (ids: string[]) =>
+        new Promise((resolve) => {
+          finishes.push(() => resolve(processedResult(ids)));
+        }),
+    );
+    const harness = consumerHarness(processBatches, { writeConcurrency: 2 });
+    await harness.service.start();
+
+    harness.receive(queuedMessage(1));
+    harness.receive(queuedMessage(2));
+    harness.receive(queuedMessage(3));
+
+    await vi.waitFor(() => expect(processBatches).toHaveBeenCalledTimes(2));
+    expect(harness.channel.ack).not.toHaveBeenCalled();
+
+    finishes.splice(0).forEach((finish) => finish());
+    await vi.waitFor(() => expect(processBatches).toHaveBeenCalledTimes(3));
+    finishes.splice(0).forEach((finish) => finish());
+    await vi.waitFor(() => expect(harness.channel.ack).toHaveBeenCalledTimes(3));
+    await harness.service.stop();
+  });
+
+  it("flushes a partial batch when its short wait expires", async () => {
+    const processBatches = vi.fn().mockImplementation(
+      async (ids: string[]) => processedResult(ids),
+    );
+    const harness = consumerHarness(processBatches, {
+      flushIntervalMs: 5,
+      maxBatchLogs: 10,
+    });
     await harness.service.start();
 
     harness.receive(queuedMessage());
-    await vi.waitFor(() => expect(insertBatch).toHaveBeenCalledOnce());
+
+    await vi.waitFor(() => expect(processBatches).toHaveBeenCalledOnce());
+    expect(processBatches.mock.calls[0]?.[0]).toHaveLength(1);
+    await harness.service.stop();
+  });
+
+  it("acknowledges a message only after its database insert succeeds", async () => {
+    let finishInsert: (() => void) | undefined;
+    const processBatches = vi.fn().mockImplementation(
+      (ids: string[]) =>
+        new Promise((resolve) => {
+          finishInsert = () => resolve(processedResult(ids));
+        }),
+    );
+    const harness = consumerHarness(processBatches);
+    await harness.service.start();
+
+    harness.receive(queuedMessage());
+    await vi.waitFor(() => expect(processBatches).toHaveBeenCalledOnce());
     expect(harness.channel.ack).not.toHaveBeenCalled();
 
     let stopped = false;
@@ -278,9 +398,36 @@ describe("queue consumer durability", () => {
     await stopping;
   });
 
+  it("acknowledges a duplicate delivery without inserting logs twice", async () => {
+    const processBatches = vi.fn().mockImplementation(
+      async (ids: string[]) => processedResult(ids, 0),
+    );
+    const harness = consumerHarness(processBatches);
+    await harness.service.start();
+
+    harness.receive(queuedMessage());
+
+    await vi.waitFor(() => expect(harness.channel.ack).toHaveBeenCalledOnce());
+    expect(processBatches).toHaveBeenCalledOnce();
+    await harness.service.stop();
+  });
+
+  it("dead-letters a reference that has no PostgreSQL outbox row", async () => {
+    const processBatches = vi.fn().mockResolvedValue(processedResult([], 0));
+    const harness = consumerHarness(processBatches);
+    await harness.service.start();
+
+    harness.receive(queuedMessage());
+
+    await vi.waitFor(() => expect(harness.channel.nack).toHaveBeenCalledOnce());
+    expect(harness.channel.nack).toHaveBeenCalledWith(expect.anything(), false, false);
+    expect(harness.channel.ack).not.toHaveBeenCalled();
+    await harness.service.stop();
+  });
+
   it("requeues a failed insert instead of acknowledging it", async () => {
-    const insertBatch = vi.fn().mockRejectedValue(new Error("database unavailable"));
-    const harness = consumerHarness(insertBatch);
+    const processBatches = vi.fn().mockRejectedValue(new Error("database unavailable"));
+    const harness = consumerHarness(processBatches);
     await harness.service.start();
 
     harness.receive(queuedMessage());

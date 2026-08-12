@@ -11,9 +11,14 @@ describe("retention cleanup", () => {
       .mockResolvedValueOnce(10_000)
       .mockResolvedValueOnce(4_000);
     const deleteExpiredRollups = vi.fn().mockResolvedValue(undefined);
+    const deleteProcessedIngestionBatches = vi
+      .fn()
+      .mockResolvedValueOnce(10_000)
+      .mockResolvedValueOnce(12);
     const repository = {
       deleteExpired,
       deleteExpiredRollups,
+      deleteProcessedIngestionBatches,
     } as unknown as RetentionRepository;
     const service = new RetentionService(
       repository,
@@ -28,5 +33,6 @@ describe("retention cleanup", () => {
     expect(deleteExpired).toHaveBeenNthCalledWith(2, 30);
     expect(deleteExpiredRollups).toHaveBeenCalledOnce();
     expect(deleteExpiredRollups).toHaveBeenCalledWith(30);
+    expect(deleteProcessedIngestionBatches).toHaveBeenCalledTimes(2);
   });
 });

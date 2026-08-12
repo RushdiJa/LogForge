@@ -9,17 +9,24 @@ services:
       PORT: "8080"
       DATABASE_URL: postgres://logforge:logforge@postgres:5432/logforge
       RABBITMQ_URL: amqp://logforge:logforge@rabbitmq:5672
+      REDIS_URL: redis://redis:6379
+      CACHE_TTL_MS: "${CACHE_TTL_MS:-5000}"
       RETENTION_DAYS: "${RETENTION_DAYS:-30}"
       LOG_LEVEL: "${LOG_LEVEL:-warn}"
       QUEUE_FLUSH_INTERVAL_MS: "${QUEUE_FLUSH_INTERVAL_MS:-250}"
       QUEUE_MAX_BATCH_LOGS: "${QUEUE_MAX_BATCH_LOGS:-5000}"
+      QUEUE_WRITE_CONCURRENCY: "${QUEUE_WRITE_CONCURRENCY:-1}"
       QUEUE_METRICS_INTERVAL_MS: "${QUEUE_METRICS_INTERVAL_MS:-0}"
       QUEUE_CONSUMER_ENABLED: "${QUEUE_CONSUMER_ENABLED:-true}"
     depends_on:
       postgres:
         condition: service_healthy
       rabbitmq:
-        condition: service_healthy
+        condition: service_started
+        required: false
+      redis:
+        condition: service_started
+        required: false
     cpus: 0.5
     mem_limit: 256m
     pids_limit: 256
@@ -54,6 +61,28 @@ services:
       start_period: 15s
     restart: unless-stopped
 
+  redis:
+    image: redis:8.2-alpine
+    command:
+      - redis-server
+      - --save
+      - ""
+      - --appendonly
+      - "no"
+      - --maxmemory
+      - 896mb
+      - --maxmemory-policy
+      - allkeys-lfu
+    cpus: 0.5
+    mem_limit: 1g
+    pids_limit: 128
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 2s
+      timeout: 2s
+      retries: 30
+    restart: unless-stopped
+
   postgres:
     image: postgres:16-alpine
     environment:
@@ -72,13 +101,15 @@ services:
       - -c
       - work_mem=8MB
       - -c
+      - random_page_cost=1.1
+      - -c
       - maintenance_work_mem=64MB
       - -c
       - wal_compression=on
       - -c
       - checkpoint_timeout=15min
       - -c
-      - max_wal_size=2GB
+      - max_wal_size=4GB
       - -c
       - min_wal_size=256MB
       - -c

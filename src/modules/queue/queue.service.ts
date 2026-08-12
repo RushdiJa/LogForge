@@ -2,22 +2,22 @@ import type { Channel, ConsumeMessage } from "amqplib";
 import type { FastifyBaseLogger } from "fastify";
 
 import type { LogsRepository } from "../logs/logs.repository.js";
-import type { AcceptedLog } from "../logs/logs.type.js";
 import type { QueueRepository } from "./queue.repository.js";
 import type { QueueMetrics } from "./queue.metrics.js";
 import { INGEST_QUEUE, type BufferedMessage } from "./queue.type.js";
-import { parseQueuedLogs } from "./queue.validate.js";
+import { parseQueuedBatchReference } from "./queue.validate.js";
 
 export interface QueueConsumerOptions {
   flushIntervalMs: number;
   maxBatchLogs: number;
+  writeConcurrency: number;
 }
 
 export class QueueConsumerService {
   private readonly pending: BufferedMessage[] = [];
   private pendingLogCount = 0;
   private timer: NodeJS.Timeout | undefined;
-  private flushing = false;
+  private activeFlushes = 0;
   private stopping = false;
   private channel: Channel | undefined;
   private consumerTag: string | undefined;
@@ -32,6 +32,7 @@ export class QueueConsumerService {
   ) {}
 
   async start(): Promise<void> {
+    this.stopping = false;
     const channel = this.queueRepository.getChannels().consumer;
     this.channel = channel;
     await channel.prefetch(64);
@@ -51,12 +52,27 @@ export class QueueConsumerService {
       clearTimeout(this.timer);
       this.timer = undefined;
     }
-    while (this.flushing) {
+    while (this.pending.length > 0 || this.activeFlushes > 0) {
+      while (
+        this.pending.length > 0 &&
+        this.activeFlushes < this.options.writeConcurrency
+      ) {
+        void this.flushOne();
+      }
       await new Promise<void>((resolve) => setTimeout(resolve, 10));
     }
-    while (this.pending.length > 0) {
-      await this.flush();
+  }
+
+  abort(): void {
+    this.stopping = true;
+    if (this.timer !== undefined) {
+      clearTimeout(this.timer);
+      this.timer = undefined;
     }
+    this.pending.length = 0;
+    this.pendingLogCount = 0;
+    this.channel = undefined;
+    this.consumerTag = undefined;
   }
 
   private receive(message: ConsumeMessage | null): void {
@@ -65,7 +81,7 @@ export class QueueConsumerService {
     }
 
     const parsingStartedAt = this.metrics === undefined ? 0 : performance.now();
-    const logs = parseQueuedLogs(message.content);
+    const reference = parseQueuedBatchReference(message.content);
     if (this.metrics !== undefined) {
       this.metrics.recordConsumerParsing(performance.now() - parsingStartedAt);
       const publishedAtMs = (message.properties.timestamp ?? 0) * 1_000;
@@ -73,80 +89,126 @@ export class QueueConsumerService {
         this.metrics.recordDeliveredMessageAge(Date.now() - publishedAtMs);
       }
     }
-    if (logs === null) {
+    if (reference === null) {
       this.logger.error("Discarding an invalid internal queue message");
       this.metrics?.recordInvalidMessage();
-      this.channel.ack(message);
+      this.channel.nack(message, false, false);
       return;
     }
 
-    this.metrics?.recordConsumed(logs.length);
-    this.pending.push({ message, logs });
-    this.pendingLogCount += logs.length;
+    this.metrics?.recordConsumed(reference.acceptedCount);
+    this.pending.push({ message, reference, receivedAt: performance.now() });
+    this.pendingLogCount += reference.acceptedCount;
 
     if (this.pendingLogCount >= this.options.maxBatchLogs) {
-      void this.flush();
+      this.dispatchFullBatches();
     } else if (this.timer === undefined) {
       this.timer = setTimeout(() => {
         this.timer = undefined;
-        void this.flush();
+        this.dispatchPartialBatch();
       }, this.options.flushIntervalMs);
       this.timer.unref();
     }
   }
 
-  private async flush(): Promise<void> {
-    if (this.flushing || this.pending.length === 0 || this.channel === undefined) {
+  private dispatchFullBatches(): void {
+    while (
+      this.activeFlushes < this.options.writeConcurrency &&
+      this.pending.length > 0 &&
+      this.pendingLogCount >= this.options.maxBatchLogs
+    ) {
+      void this.flushOne();
+    }
+  }
+
+  private dispatchPartialBatch(): void {
+    if (
+      this.activeFlushes < this.options.writeConcurrency &&
+      this.pending.length > 0
+    ) {
+      void this.flushOne();
+    }
+  }
+
+  private async flushOne(): Promise<void> {
+    if (
+      this.activeFlushes >= this.options.writeConcurrency ||
+      this.pending.length === 0 ||
+      this.channel === undefined
+    ) {
       return;
     }
 
-    this.flushing = true;
+    this.activeFlushes += 1;
     const messages: BufferedMessage[] = [];
     let logCount = 0;
+    let payloadBytes = 0;
+    let oldestReceivedAt = performance.now();
+    let databaseWriteStartedAt = 0;
+    let databaseWriteActive = false;
 
     while (this.pending.length > 0) {
       const next = this.pending[0];
-      if (next === undefined || (messages.length > 0 && logCount + next.logs.length > this.options.maxBatchLogs)) {
+      if (
+        next === undefined ||
+        (messages.length > 0 &&
+          logCount + next.reference.acceptedCount > this.options.maxBatchLogs)
+      ) {
         break;
       }
       messages.push(this.pending.shift() as BufferedMessage);
-      logCount += next.logs.length;
-      this.pendingLogCount -= next.logs.length;
+      logCount += next.reference.acceptedCount;
+      payloadBytes += next.message.content.length;
+      oldestReceivedAt = Math.min(oldestReceivedAt, next.receivedAt);
+      this.pendingLogCount -= next.reference.acceptedCount;
     }
 
     try {
+      this.metrics?.recordBatchAssembly(
+        performance.now() - oldestReceivedAt,
+        logCount,
+        payloadBytes,
+      );
       const preparationStartedAt = this.metrics === undefined ? 0 : performance.now();
-      const logs = new Array<AcceptedLog>(logCount);
-      let offset = 0;
-      let oldestPublishedAtMs = Date.now();
-      for (const item of messages) {
-        const publishedAtMs = (item.message.properties.timestamp ?? 0) * 1_000;
-        if (publishedAtMs > 0) {
-          oldestPublishedAtMs = Math.min(oldestPublishedAtMs, publishedAtMs);
-        }
-        for (const log of item.logs) {
-          logs[offset] = log;
-          offset += 1;
-        }
-      }
+      const batchIds = messages.map((item) => item.reference.batchId);
       if (this.metrics !== undefined) {
         this.metrics.recordBatchPreparation(performance.now() - preparationStartedAt);
       }
 
-      const insertStartedAt = performance.now();
-      await this.logsRepository.insertBatch(logs);
-      const insertDurationMs = performance.now() - insertStartedAt;
+      databaseWriteStartedAt = performance.now();
+      databaseWriteActive = true;
+      this.metrics?.recordDatabaseWriteStarted();
+      const databaseStages = await this.logsRepository.processBatches(batchIds);
+      const insertDurationMs = performance.now() - databaseWriteStartedAt;
+      this.metrics?.recordDatabaseWriteFinished(insertDurationMs);
+      this.metrics?.recordDatabaseStages(databaseStages);
+      databaseWriteActive = false;
       this.metrics?.recordInserted(
-        logCount,
+        databaseStages.insertedLogs,
         insertDurationMs,
-        Date.now() - oldestPublishedAtMs,
+        Date.now() - databaseStages.oldestAcceptedAtMs,
       );
+      const acknowledgmentStartedAt = performance.now();
+      let acknowledged = 0;
       for (const item of messages) {
-        this.channel.ack(item.message);
+        if (databaseStages.knownBatchIds.has(item.reference.batchId)) {
+          this.channel.ack(item.message);
+          acknowledged += 1;
+        } else {
+          this.channel.nack(item.message, false, false);
+        }
       }
-      this.metrics?.recordAcknowledged(messages.length);
+      this.metrics?.recordAcknowledged(
+        acknowledged,
+        performance.now() - acknowledgmentStartedAt,
+      );
       this.consecutiveInsertFailures = 0;
     } catch (error) {
+      if (databaseWriteActive) {
+        this.metrics?.recordDatabaseWriteFinished(
+          performance.now() - databaseWriteStartedAt,
+        );
+      }
       this.consecutiveInsertFailures += 1;
       const retryDelayMs = Math.min(
         5_000,
@@ -161,13 +223,22 @@ export class QueueConsumerService {
         await new Promise<void>((resolve) => setTimeout(resolve, retryDelayMs));
       }
       for (const item of messages) {
-        this.channel.nack(item.message, false, true);
+        this.channel?.nack(item.message, false, true);
       }
       this.metrics?.recordRequeued(messages.length);
     } finally {
-      this.flushing = false;
+      this.activeFlushes -= 1;
       if (this.pending.length > 0 && !this.stopping) {
-        setImmediate(() => void this.flush());
+        setImmediate(() => {
+          this.dispatchFullBatches();
+          if (this.timer === undefined && this.pending.length > 0) {
+            this.timer = setTimeout(() => {
+              this.timer = undefined;
+              this.dispatchPartialBatch();
+            }, this.options.flushIntervalMs);
+            this.timer.unref();
+          }
+        });
       }
     }
   }

@@ -95,6 +95,10 @@ export class QueueMetrics {
   private consumerParsedMessages = 0;
   private latestDeliveredMessageAgeMs = 0;
   private maximumDeliveredMessageAgeMs = 0;
+  private activeDatabaseWrites = 0;
+  private maximumActiveDatabaseWrites = 0;
+  private batchPayloadBytes = 0;
+  private maximumBatchPayloadBytes = 0;
   private readonly requestTimings = new WeakMap<object, RequestTiming>();
   private outstandingHttpHandlers = 0;
   private maximumOutstandingHttpHandlers = 0;
@@ -109,6 +113,14 @@ export class QueueMetrics {
   private readonly backpressureWait = new SampledStage();
   private readonly publisherConfirm = new SampledStage();
   private readonly totalHttpRequest = new SampledStage();
+  private readonly batchAssembly = new SampledStage();
+  private readonly databaseWrite = new SampledStage();
+  private readonly acknowledgment = new SampledStage();
+  private readonly messageCatalogUpsert = new SampledStage();
+  private readonly rawInsert = new SampledStage();
+  private readonly rollupAggregation = new SampledStage();
+  private readonly rollupUpsert = new SampledStage();
+  private readonly commitAndPool = new SampledStage();
   private snapshotAt = Date.now();
   private snapshotPublishedLogs = 0;
   private snapshotConsumedLogs = 0;
@@ -243,8 +255,42 @@ export class QueueMetrics {
     this.preparedBatches += 1;
   }
 
-  recordAcknowledged(messages: number): void {
+  recordBatchAssembly(durationMs: number, _logs: number, payloadBytes: number): void {
+    this.batchAssembly.record(durationMs);
+    this.batchPayloadBytes += payloadBytes;
+    this.maximumBatchPayloadBytes = Math.max(this.maximumBatchPayloadBytes, payloadBytes);
+  }
+
+  recordDatabaseWriteStarted(): void {
+    this.activeDatabaseWrites += 1;
+    this.maximumActiveDatabaseWrites = Math.max(
+      this.maximumActiveDatabaseWrites,
+      this.activeDatabaseWrites,
+    );
+  }
+
+  recordDatabaseWriteFinished(durationMs: number): void {
+    this.activeDatabaseWrites = Math.max(0, this.activeDatabaseWrites - 1);
+    this.databaseWrite.record(durationMs);
+  }
+
+  recordDatabaseStages(stages: {
+    messageCatalogUpsertMs: number;
+    rawInsertMs: number;
+    rollupAggregationMs: number;
+    rollupUpsertMs: number;
+    commitAndPoolMs: number;
+  }): void {
+    this.messageCatalogUpsert.record(stages.messageCatalogUpsertMs);
+    this.rawInsert.record(stages.rawInsertMs);
+    this.rollupAggregation.record(stages.rollupAggregationMs);
+    this.rollupUpsert.record(stages.rollupUpsertMs);
+    this.commitAndPool.record(stages.commitAndPoolMs);
+  }
+
+  recordAcknowledged(messages: number, durationMs = 0): void {
     this.unacknowledgedMessages = Math.max(0, this.unacknowledgedMessages - messages);
+    this.acknowledgment.record(durationMs);
   }
 
   recordInsertFailure(logs: number): void {
@@ -332,6 +378,12 @@ export class QueueMetrics {
           : Math.round(this.consumerParseDurationMs / this.consumerParsedMessages),
       latestDeliveredMessageAgeMs: this.latestDeliveredMessageAgeMs,
       maximumDeliveredMessageAgeMs: this.maximumDeliveredMessageAgeMs,
+      activeDatabaseWrites: this.activeDatabaseWrites,
+      maximumActiveDatabaseWrites: this.maximumActiveDatabaseWrites,
+      batchPayloadBytes: this.batchPayloadBytes,
+      averageBatchPayloadBytes:
+        this.insertBatches === 0 ? 0 : Math.round(this.batchPayloadBytes / this.insertBatches),
+      maximumBatchPayloadBytes: this.maximumBatchPayloadBytes,
       ...this.jsonParsing.snapshot("jsonParsing"),
       ...this.validation.snapshot("validation"),
       ...this.serialization.snapshot("serialization"),
@@ -339,6 +391,14 @@ export class QueueMetrics {
       ...this.backpressureWait.snapshot("backpressureWait"),
       ...this.publisherConfirm.snapshot("publisherConfirm"),
       ...this.totalHttpRequest.snapshot("totalHttpRequest"),
+      ...this.batchAssembly.snapshot("batchAssembly"),
+      ...this.databaseWrite.snapshot("databaseWrite"),
+      ...this.acknowledgment.snapshot("acknowledgment"),
+      ...this.messageCatalogUpsert.snapshot("messageCatalogUpsert"),
+      ...this.rawInsert.snapshot("rawInsert"),
+      ...this.rollupAggregation.snapshot("rollupAggregation"),
+      ...this.rollupUpsert.snapshot("rollupUpsert"),
+      ...this.commitAndPool.snapshot("commitAndPool"),
       publishedLogsPerSecond: Math.round(publishedLogsPerSecond),
       consumedLogsPerSecond: Math.round(consumedLogsPerSecond),
       insertedLogsPerSecond: Math.round(insertedLogsPerSecond),
