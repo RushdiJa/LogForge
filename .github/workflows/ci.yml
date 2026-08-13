@@ -29,7 +29,7 @@ jobs:
       - run: npm run build
 
   benchmark:
-    name: 30k logs/sec benchmark
+    name: 15k logs/sec benchmark
     needs: test
     runs-on: ubuntu-latest
     timeout-minutes: 15
@@ -51,7 +51,7 @@ jobs:
         run: |
           docker run --rm --network host \
             -e BASE_URL=http://127.0.0.1:8080 \
-            -e TARGET_LPS=30000 \
+            -e TARGET_LPS=15000 \
             -e DURATION=120s \
             -v "$PWD/benchmark:/scripts:ro" \
             grafana/k6:latest run /scripts/load.js

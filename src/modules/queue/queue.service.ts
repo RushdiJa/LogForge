@@ -35,7 +35,7 @@ export class QueueConsumerService {
     this.stopping = false;
     const channel = this.queueRepository.getChannels().consumer;
     this.channel = channel;
-    await channel.prefetch(128);
+    await channel.prefetch(64);
     const consumer = await channel.consume(INGEST_QUEUE, (message) => this.receive(message), {
       noAck: false,
     });
