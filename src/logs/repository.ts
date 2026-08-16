@@ -1,5 +1,5 @@
 import { pool } from "../db.js";
-import type { Log } from "./type.js";
+import type { Log, FilterResult, AggregateBucket, AggregateFilterResult, AggregateResult } from "./type.js";
 
 export async function insertLogs(logs: Log[]): Promise<void> {
   const rows: string[] = [];
@@ -19,13 +19,13 @@ export async function insertLogs(logs: Log[]): Promise<void> {
     );
 
     rows.push(`(
-      $${base + 1},
+      $${base + 1}, 
       $${base + 2},
       $${base + 3},
       $${base + 4},
       hstore($${base + 5}::text[], $${base + 6}::text[])
     )`);
-}
+  }
 
   await pool.query(
     `
@@ -40,4 +40,180 @@ export async function insertLogs(logs: Log[]): Promise<void> {
     `,
     values
   );
+}
+
+export async function selectLogs(
+  filter: FilterResult,
+): Promise<(Log & {id: number})[]> {
+  const conditions: string[] = [];
+  const values: unknown[] = [];
+
+  if (filter.service !== undefined) {
+    values.push(filter.service);
+    conditions.push(`l.service = $${values.length}`);
+  }
+
+  if (filter.level !== undefined) {
+    values.push(filter.level);
+    conditions.push(`l.level = $${values.length}`);
+  }
+
+  if (filter.since !== undefined) {
+    values.push(filter.since);
+    conditions.push(`l.timestamp >= $${values.length}`);
+  }
+
+  if (filter.until !== undefined) {
+    values.push(filter.until);
+    conditions.push(`l.timestamp < $${values.length}`);
+  }
+
+  if (filter.attributes !== undefined) {
+    for (const [key, value] of Object.entries(filter.attributes)) {
+      values.push(key);
+      const keyParameter = `$${values.length}`;
+
+      values.push(value);
+      const valueParameter = `$${values.length}`;
+
+      conditions.push(
+        `(l.attributes -> ${keyParameter}) = ${valueParameter}`,
+      );
+    }
+  }
+
+  if (filter.q !== undefined) {
+    const escapedQuery = filter.q.replace(/[\\%_]/g, "\\$&");
+
+    values.push(`%${escapedQuery}%`);
+
+    conditions.push(
+      `l.message ILIKE $${values.length} ESCAPE '\\'`,
+    );
+  }
+
+  if (filter.cursor !== undefined) {
+    values.push(filter.cursor);
+
+    conditions.push(`
+      (l.timestamp, l.id) < (
+        SELECT cursor_log.timestamp, cursor_log.id
+        FROM logs AS cursor_log
+        WHERE cursor_log.id = $${values.length}
+      )
+    `);
+  }
+
+  values.push(filter.limit);
+
+  const result = await pool.query(
+    `
+      SELECT
+        l.id,
+        l.timestamp,
+        l.level,
+        l.service,
+        l.message,
+        hstore_to_json(l.attributes) AS attributes
+      FROM logs AS l
+      ${conditions.length > 0
+        ? `WHERE ${conditions.join(" AND ")}`
+        : ""}
+      ORDER BY
+        l.timestamp DESC,
+        l.id DESC
+      LIMIT $${values.length}
+    `,
+    values,
+  );
+
+  return result.rows as (Log & {id: number})[];
+}
+
+
+const bucketIntervals: Record<AggregateBucket, string> = {
+  "1m": "1 minute",
+  "5m": "5 minutes",
+  "1h": "1 hour",
+  "1d": "1 day",
+};
+
+export async function selectLogAggregates(
+  filter: AggregateFilterResult,
+): Promise<AggregateResult[]> {
+  const conditions: string[] = [];
+  const values: unknown[] = [];
+
+  values.push(bucketIntervals[filter.bucket]);
+  const bucketParameter = `$${values.length}`;
+
+  values.push(filter.since);
+  conditions.push(`l.timestamp >= $${values.length}`);
+
+  values.push(filter.until);
+  conditions.push(`l.timestamp < $${values.length}`);
+
+  if (filter.service !== undefined) {
+    values.push(filter.service);
+    conditions.push(`l.service = $${values.length}`);
+  }
+
+  if (filter.level !== undefined) {
+    values.push(filter.level);
+    conditions.push(`l.level = $${values.length}`);
+  }
+
+  if (filter.attributes !== undefined) {
+    for (const [key, value] of Object.entries(filter.attributes)) {
+      values.push(key);
+      const keyParameter = `$${values.length}`;
+
+      values.push(value);
+      const valueParameter = `$${values.length}`;
+
+      conditions.push(
+        `(l.attributes -> ${keyParameter}) = ${valueParameter}`,
+      );
+    }
+  }
+
+  if (filter.q !== undefined) {
+    const escapedQuery = filter.q.replace(/[\\%_]/g, "\\$&");
+
+    values.push(`%${escapedQuery}%`);
+
+    conditions.push(
+      `l.message ILIKE $${values.length} ESCAPE '\\'`,
+    );
+  }
+
+  let groupExpression = "NULL::text";
+
+  if (filter.groupBy === "service") {
+    groupExpression = "l.service";
+  }
+
+  if (filter.groupBy === "level") {
+    groupExpression = "l.level::text";
+  }
+
+  const result = await pool.query(
+    `
+      SELECT
+        date_bin(
+          ${bucketParameter}::interval,
+          l.timestamp,
+          '1970-01-01T00:00:00Z'::timestamptz
+        ) AS start,
+        ${groupExpression} AS "group",
+        COUNT(*)::integer AS count
+      FROM logs AS l
+      WHERE ${conditions.join(" AND ")}
+      GROUP BY 1, 2
+      ORDER BY 1 ASC, 2 ASC NULLS FIRST
+    `,
+    values,
+  );
+
+  return result.rows as AggregateResult[];
 }
