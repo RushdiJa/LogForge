@@ -1,7 +1,7 @@
 import { insertLogBatch } from "./repository.js";
 import type { Log } from "./type.js";
 
-const FLUSH_DELAY_MS = 10;
+const FLUSH_DELAY_MS = 50;
 
 let queuedLogs: Log[] = [];
 let currentBatch: Promise<void> | undefined;
