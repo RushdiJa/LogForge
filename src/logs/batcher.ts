@@ -5,6 +5,7 @@ const FLUSH_DELAY_MS = 50;
 
 let queuedLogs: Log[] = [];
 let currentBatch: Promise<void> | undefined;
+let lastWrite: Promise<void> = Promise.resolve();
 
 export function enqueueLogs(logs: Log[]): Promise<void> {
   queuedLogs.push(...logs);
@@ -26,5 +27,11 @@ async function flushBatch(): Promise<void> {
   queuedLogs = [];
   currentBatch = undefined;
 
-  await insertLogBatch(logsToInsert);
+  const write = lastWrite.then(() => {
+    return insertLogBatch(logsToInsert);
+  });
+
+  lastWrite = write.catch(() => {});
+
+  await write;
 }
