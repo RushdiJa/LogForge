@@ -53,4 +53,4 @@ jobs:
 
       - name: Stop application
         if: always()
-        run: docker compose compose down -v
+        run: docker compose down -v
