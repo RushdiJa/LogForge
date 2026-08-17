@@ -3,9 +3,10 @@ import type {
   FastifyRequest,
 } from "fastify";
 
-import { insertLogs, selectLogAggregates, selectLogs } from "./repository.js";
+import { selectLogAggregates, selectLogs } from "./repository.js";
 import { validateLogs, validateFilters, validateAggregateFilters } from "./validate.js";
 import type { AggregateFilterResult, FilterResult } from "./type.js";
+import { enqueueLogs } from "./batcher.js";
 
 export async function postLogs(
   request: FastifyRequest,
@@ -35,8 +36,8 @@ export async function postLogs(
     };
   }
 
-  await insertLogs(result.valid);
-
+  await enqueueLogs(result.valid);
+  
   return {
     accepted: result.valid.length,
     rejected: result.rejected,
