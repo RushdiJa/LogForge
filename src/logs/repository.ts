@@ -27,8 +27,8 @@ export async function insertLogBatch(logs: Log[]): Promise<void> {
     )`);
   }
 
-  await pool.query(
-    `
+  await pool.query(`
+    WITH inserted_logs AS (
       INSERT INTO logs (
         timestamp,
         level,
@@ -37,8 +37,42 @@ export async function insertLogBatch(logs: Log[]): Promise<void> {
         attributes
       )
       VALUES ${rows.join(",")}
-    `,
-    values
+      RETURNING
+        timestamp,
+        service,
+        level
+    )
+    INSERT INTO log_minute_aggregates (
+      bucket_start,
+      service,
+      level,
+      count
+    )
+    SELECT
+      date_bin(
+        '1 minute',
+        timestamp,
+        '1970-01-01T00:00:00Z'
+      ),
+      service,
+      level,
+      COUNT(*)::integer
+    FROM inserted_logs
+    GROUP BY
+      1,
+      service,
+      level
+    ON CONFLICT (
+      bucket_start,
+      service,
+      level
+    )
+    DO UPDATE SET
+      count =
+        log_minute_aggregates.count +
+        EXCLUDED.count
+  `,
+  values,
   );
 }
 
@@ -138,7 +172,7 @@ const bucketIntervals: Record<AggregateBucket, string> = {
   "1d": "1 day",
 };
 
-export async function selectLogAggregates(
+export async function selectRawLogAggregates(
   filter: AggregateFilterResult,
 ): Promise<AggregateResult[]> {
   const conditions: string[] = [];
@@ -205,7 +239,7 @@ export async function selectLogAggregates(
           l.timestamp,
           '1970-01-01T00:00:00Z'::timestamptz
         ) AS start,
-        ${groupExpression} AS "group",
+          ${groupExpression} AS "group",
         COUNT(*)::integer AS count
       FROM logs AS l
       WHERE ${conditions.join(" AND ")}
@@ -216,4 +250,121 @@ export async function selectLogAggregates(
   );
 
   return result.rows as AggregateResult[];
+}
+
+async function selectRollupLogAggregates(
+  filter: AggregateFilterResult,
+): Promise<AggregateResult[]> {
+  const minuteMs = 60_000;
+
+  const fullMinutesStart = new Date(
+    Math.ceil(filter.since.getTime() / minuteMs) * minuteMs,
+  );
+
+  const fullMinutesEnd = new Date(
+    Math.floor(filter.until.getTime() / minuteMs) * minuteMs,
+  );
+
+  // إذا لم توجد دقيقة كاملة، نستخدم السجلات الأصلية.
+  if (fullMinutesStart >= fullMinutesEnd) {
+    return selectRawLogAggregates(filter);
+  }
+
+  const values: unknown[] = [
+    bucketIntervals[filter.bucket],
+    filter.since,
+    fullMinutesStart,
+    fullMinutesEnd,
+    filter.until,
+  ];
+
+  const rollupConditions = [
+    `a.bucket_start >= $3`,
+    `a.bucket_start < $4`,
+  ];
+
+  const boundaryConditions = [
+    `(
+      (l.timestamp >= $2 AND l.timestamp < $3)
+      OR
+      (l.timestamp >= $4 AND l.timestamp < $5)
+    )`,
+  ];
+
+  if (filter.service !== undefined) {
+    values.push(filter.service);
+    const parameter = `$${values.length}`;
+
+    rollupConditions.push(`a.service = ${parameter}`);
+    boundaryConditions.push(`l.service = ${parameter}`);
+  }
+
+  if (filter.level !== undefined) {
+    values.push(filter.level);
+    const parameter = `$${values.length}`;
+
+    rollupConditions.push(`a.level = ${parameter}`);
+    boundaryConditions.push(`l.level = ${parameter}`);
+  }
+
+  let groupExpression = "NULL::text";
+
+  if (filter.groupBy === "service") {
+    groupExpression = "source.service";
+  }
+
+  if (filter.groupBy === "level") {
+    groupExpression = "source.level::text";
+  }
+
+  const result = await pool.query(
+    `
+      WITH source AS (
+        SELECT
+          a.bucket_start AS timestamp,
+          a.service,
+          a.level,
+          a.count
+        FROM log_minute_aggregates AS a
+        WHERE ${rollupConditions.join(" AND ")}
+
+        UNION ALL
+
+        SELECT
+          l.timestamp,
+          l.service,
+          l.level,
+          1 AS count
+        FROM logs AS l
+        WHERE ${boundaryConditions.join(" AND ")}
+      )
+      SELECT
+        date_bin(
+          $1::interval,
+          source.timestamp,
+          '1970-01-01T00:00:00Z'::timestamptz
+        ) AS start,
+        ${groupExpression} AS "group",
+        SUM(source.count)::integer AS count
+      FROM source
+      GROUP BY 1, 2
+      ORDER BY 1 ASC, 2 ASC NULLS FIRST
+    `,
+    values,
+  );
+
+  return result.rows as AggregateResult[];
+}
+
+export async function selectLogAggregates(
+  filter: AggregateFilterResult,
+): Promise<AggregateResult[]> {
+  if (
+    filter.q !== undefined ||
+    filter.attributes !== undefined
+  ) {
+    return selectRawLogAggregates(filter);
+  }
+
+  return selectRollupLogAggregates(filter);
 }
