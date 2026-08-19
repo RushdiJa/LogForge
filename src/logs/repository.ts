@@ -1,7 +1,7 @@
 import { pool } from "../db.js";
 import type { Log, FilterResult, AggregateBucket, AggregateFilterResult, AggregateResult } from "./type.js";
 
-export async function insertLogBatch(logs: Log[]): Promise<void> {
+export async function  insertLogBatch(logs: Log[]): Promise<void> {
   const rows: string[] = [];
   const values: unknown[] = [];
 
