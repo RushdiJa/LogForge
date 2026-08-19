@@ -265,7 +265,6 @@ async function selectRollupLogAggregates(
     Math.floor(filter.until.getTime() / minuteMs) * minuteMs,
   );
 
-  // إذا لم توجد دقيقة كاملة، نستخدم السجلات الأصلية.
   if (fullMinutesStart >= fullMinutesEnd) {
     return selectRawLogAggregates(filter);
   }
